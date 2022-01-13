@@ -2704,9 +2704,11 @@ void WebContents::OnPaint(const gfx::Rect& dirty_rect, const SkBitmap& bitmap) {
 void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
                                  const gpu::SyncToken& sync_token,
                                  const gfx::Rect& content_rect,
+                                 const gfx::Rect& damage_rect,
                                  bool is_popup,
                                  void (*callback)(void*, void*),
                                  void* context) {
+  Emit("texture-paint", damage_rect);
   if (paint_observers_.might_have_observers()) {
     for (PaintObserver& observer : paint_observers_) {
       observer.OnTexturePaint(std::move(mailbox), std::move(sync_token),

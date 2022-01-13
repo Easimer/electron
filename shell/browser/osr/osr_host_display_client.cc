@@ -108,6 +108,7 @@ void OffScreenHostDisplayClient::BackingTextureCreated(
 
 void OffScreenHostDisplayClient::OnSwapBuffers(
     const gfx::Size& size,
+    const gfx::Rect& damage,
     const gpu::SyncToken& token,
     mojo::PendingRemote<viz::mojom::SingleReleaseCallback> callback) {
   texture_rect_ = gfx::Rect(size);
@@ -117,7 +118,8 @@ void OffScreenHostDisplayClient::OnSwapBuffers(
   };
 
   texture_callback_.Run(
-      std::move(mailbox_), std::move(token), std::move(texture_rect_),
+      std::move(mailbox_), std::move(token),
+      std::move(texture_rect_), std::move(damage), 
       [](void* context, void* token) {
         FramePinner* pinner = static_cast<FramePinner*>(context);
 

@@ -943,16 +943,19 @@ void OffScreenRenderWidgetHostView::OnPopupTexturePaint(
     const gpu::Mailbox& mailbox,
     const gpu::SyncToken& sync_token,
     const gfx::Rect& content_rect,
+    const gfx::Rect& damage_rect,
     void (*callback)(void*, void*),
     void* context) {
   texture_callback_.Run(std::move(mailbox), std::move(sync_token),
-                        std::move(content_rect), true, callback, context);
+                        std::move(content_rect), std::move(damage_rect),
+                        true, callback, context);
 }
 
 void OffScreenRenderWidgetHostView::OnTexturePaint(
     const gpu::Mailbox& mailbox,
     const gpu::SyncToken& sync_token,
     const gfx::Rect& content_rect,
+    const gfx::Rect& damage_rect,
     void (*callback)(void*, void*),
     void* context) {
   if (!painting_) {
@@ -966,15 +969,16 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
 
   if (!IsPopupWidget()) {
     texture_callback_.Run(std::move(mailbox), std::move(sync_token),
-                          std::move(content_rect), false, callback, context);
+                          std::move(content_rect), std::move(damage_rect),
+                          false, callback, context);
   } else if (parent_texture_callback_) {
     gfx::Rect rect_in_pixels = gfx::ToEnclosingRect(
         ConvertRectToPixels(popup_position_, GetScaleFactor()));
 
     parent_texture_callback_.Run(
         std::move(mailbox), std::move(sync_token),
-        gfx::Rect(rect_in_pixels.origin(), content_rect.size()), callback,
-        context);
+        gfx::Rect(rect_in_pixels.origin(), content_rect.size()),
+        std::move(damage_rect), callback, context);
   } else {
     // TODO: fix this
   }
@@ -1030,7 +1034,8 @@ void OffScreenRenderWidgetHostView::OnProxyViewPaint(
   };
 
   texture_callback_.Run(
-      mailbox, sync_token, proxy->GetBackingBounds(), true,
+      mailbox, sync_token, proxy->GetBackingBounds(),
+      proxy->GetBackingBounds(), true,
       [](void* context, void* token) {
         FramePinner* pinner = static_cast<FramePinner*>(context);
 
@@ -1115,7 +1120,8 @@ void OffScreenRenderWidgetHostView::CancelWidget() {
   if (parent_host_view_) {
     if (parent_host_view_->popup_host_view_ == this) {
       parent_texture_callback_.Run(gpu::Mailbox(), gpu::SyncToken(),
-                                   gfx::Rect(), nullptr, nullptr);
+                                   gfx::Rect(), gfx::Rect(),
+                                   nullptr, nullptr);
 
       parent_host_view_->set_popup_host_view(nullptr);
     } else if (parent_host_view_->child_host_view_ == this) {
@@ -1147,7 +1153,8 @@ void OffScreenRenderWidgetHostView::ProxyViewDestroyed(
   proxy_views_.erase(proxy);
 
   texture_callback_.Run(gpu::Mailbox(), gpu::SyncToken(),
-                        gfx::Rect(), true, nullptr, nullptr);
+                        gfx::Rect(), gfx::Rect(),
+                        true, nullptr, nullptr);
 }
 
 void OffScreenRenderWidgetHostView::SetPainting(bool painting) {

@@ -21,6 +21,7 @@ typedef base::Callback<void(const gfx::Rect&, const SkBitmap&)> OnPaintCallback;
 typedef base::RepeatingCallback<void(const gpu::Mailbox&,
                                      const gpu::SyncToken&,
                                      const gfx::Rect&,
+                                     const gfx::Rect&,
                                      void (*)(void*, void*),
                                      void*)>
     OnTexturePaintCallbackInternal;
@@ -68,6 +69,7 @@ class OffScreenHostDisplayClient : public viz::HostDisplayClient {
 
   void OnSwapBuffers(
       const gfx::Size& size,
+      const gfx::Rect& damage,
       const gpu::SyncToken& token,
       mojo::PendingRemote<viz::mojom::SingleReleaseCallback>) override;
 

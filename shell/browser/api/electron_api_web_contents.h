@@ -340,6 +340,7 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
   void OnTexturePaint(const gpu::Mailbox& mailbox,
                       const gpu::SyncToken& sync_token,
                       const gfx::Rect& content_rect,
+                      const gfx::Rect& damage_rect,
                       bool is_popup,
                       void (*callback)(void*, void*),
                       void* context);
@@ -699,7 +700,7 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
   int currently_committed_process_id_ = -1;
 
   scoped_refptr<base::TaskRunner> print_task_runner_;
-  
+
   base::ObserverList<PaintObserver> paint_observers_;
 
   service_manager::BinderRegistryWithArgs<content::RenderFrameHost*> registry_;

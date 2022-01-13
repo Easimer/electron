@@ -52,6 +52,7 @@ typedef base::Callback<void(const gfx::Rect&, const SkBitmap&)> OnPaintCallback;
 typedef base::Callback<void(const gpu::Mailbox&,
                             const gpu::SyncToken&,
                             const gfx::Rect&,
+                            const gfx::Rect&,
                             bool,
                             void (*)(void*, void*),
                             void*)>
@@ -59,6 +60,7 @@ typedef base::Callback<void(const gpu::Mailbox&,
 typedef base::Callback<void(const gfx::Rect&)> OnPopupPaintCallback;
 typedef base::Callback<void(const gpu::Mailbox&,
                             const gpu::SyncToken&,
+                            const gfx::Rect&,
                             const gfx::Rect&,
                             void (*)(void*, void*),
                             void*)>
@@ -202,11 +204,13 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   void OnPopupTexturePaint(const gpu::Mailbox& mailbox,
                            const gpu::SyncToken& sync_token,
                            const gfx::Rect& content_rect,
+                           const gfx::Rect& damage_rect,
                            void (*callback)(void*, void*),
                            void* context);
   void OnTexturePaint(const gpu::Mailbox& mailbox,
                       const gpu::SyncToken& sync_token,
                       const gfx::Rect& content_rect,
+                      const gfx::Rect& damage_rect,
                       void (*callback)(void*, void*),
                       void* context);
   void OnPopupPaint(const gfx::Rect& damage_rect);
