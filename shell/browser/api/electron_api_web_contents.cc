@@ -34,10 +34,12 @@
 #include "components/security_state/content/content_utils.h"
 #include "components/security_state/core/security_state.h"
 #include "content/browser/renderer_host/frame_tree_node.h"  // nogncheck
+#include "content/browser/renderer_host/render_frame_host_impl.h"  // nogncheck
 #include "content/browser/renderer_host/render_frame_host_manager.h"  // nogncheck
 #include "content/browser/renderer_host/render_widget_host_impl.h"  // nogncheck
 #include "content/browser/renderer_host/render_widget_host_view_base.h"  // nogncheck
 #include "content/public/browser/child_process_security_policy.h"
+#include "content/public/browser/context_factory.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/desktop_media_id.h"
 #include "content/public/browser/desktop_streams_registry.h"
@@ -66,6 +68,8 @@
 #include "gin/handle.h"
 #include "gin/object_template_builder.h"
 #include "gin/wrappable.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
+#include "gpu/command_buffer/common/shared_image_usage.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -133,6 +137,7 @@
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/messaging/transferable_message.mojom.h"
 #include "third_party/blink/public/mojom/renderer_preferences.mojom.h"
+#include "third_party/skia/include/core/SkSurface.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/display/screen.h"
@@ -140,6 +145,7 @@
 
 #if BUILDFLAG(ENABLE_OSR)
 #include "shell/browser/osr/osr_render_widget_host_view.h"
+#include "shell/browser/api/electron_api_offscreen_window.h"
 #include "shell/browser/osr/osr_web_contents_view.h"
 #endif
 
@@ -755,8 +761,10 @@ WebContents::WebContents(v8::Isolate* isolate,
 #if BUILDFLAG(ENABLE_OSR)
     if (embedder_ && embedder_->IsOffScreen()) {
       auto* view = new OffScreenWebContentsView(
-          false,
-          base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
+          false, 0.0f,
+          base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)),
+          base::BindRepeating(&WebContents::OnTexturePaint,
+                              base::Unretained(this)));
       params.view = view;
       params.delegate_view = view;
 
@@ -768,17 +776,17 @@ WebContents::WebContents(v8::Isolate* isolate,
 #if BUILDFLAG(ENABLE_OSR)
     }
   } else if (IsOffScreen()) {
-    // webPreferences does not have a transparent option, so if the window needs
-    // to be transparent, that will be set at electron_api_browser_window.cc#L57
-    // and we then need to pull it back out and check it here.
-    std::string background_color;
-    options.GetHidden(options::kBackgroundColor, &background_color);
-    bool transparent = ParseCSSColor(background_color) == SK_ColorTRANSPARENT;
+    bool transparent = false;
+    options.Get(options::kTransparent, &transparent);
+    float scaleFactor = 0.0f;
+    options.Get(options::kScaleFactor, &scaleFactor);
 
     content::WebContents::CreateParams params(session->browser_context());
     auto* view = new OffScreenWebContentsView(
-        transparent,
-        base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
+        transparent, scaleFactor,
+        base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)),
+        base::BindRepeating(&WebContents::OnTexturePaint,
+                            base::Unretained(this)));
     params.view = view;
     params.delegate_view = view;
 
@@ -801,6 +809,7 @@ void WebContents::InitZoomController(content::WebContents* web_contents,
   double zoom_factor;
   if (options.Get(options::kZoomFactor, &zoom_factor))
     zoom_controller_->SetDefaultZoomFactor(zoom_factor);
+  zoom_controller_->SetZoomMode(WebContentsZoomController::ZoomMode::kIsolated);
 }
 
 void WebContents::InitWithSessionAndOptions(
@@ -959,6 +968,8 @@ WebContents::~WebContents() {
   // This event is only for internal use, which is emitted when WebContents is
   // being destroyed.
   Emit("will-destroy");
+
+  DestroyDragImageMailbox(true);
 
   // For guest view based on OOPIF, the WebContents is released by the embedder
   // frame, and we need to clear the reference to the memory.
@@ -2039,12 +2050,18 @@ void WebContents::SetOwnerWindow(content::WebContents* web_contents,
     owner_window_ = nullptr;
     web_contents->RemoveUserData(NativeWindowRelay::UserDataKey());
   }
+}
+
 #if BUILDFLAG(ENABLE_OSR)
+void WebContents::SetOffscreenWindow(
+    api::OffscreenWindow* offscreen_window) {
+  OffscreenWindowRelay::CreateForWebContents(GetWebContents(),
+                                             offscreen_window->GetWeakPtr());
   auto* osr_wcv = GetOffScreenWebContentsView();
   if (osr_wcv)
-    osr_wcv->SetNativeWindow(owner_window);
-#endif
+    osr_wcv->SetOffscreenWindow(offscreen_window);
 }
+#endif
 
 content::WebContents* WebContents::GetWebContents() const {
   if (!inspectable_web_contents_)
@@ -2956,8 +2973,10 @@ bool WebContents::IsFocused() const {
 
 void WebContents::SendInputEvent(v8::Isolate* isolate,
                                  v8::Local<v8::Value> input_event) {
-  content::RenderWidgetHostView* view =
-      web_contents()->GetRenderWidgetHostView();
+  content::RenderFrameHost* focused_frame = web_contents()->GetFocusedFrame();
+  if (!focused_frame)
+    focused_frame = web_contents()->GetMainFrame();
+  content::RenderWidgetHostView* view = focused_frame->GetView();
   if (!view)
     return;
 
@@ -2970,6 +2989,54 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
       if (IsOffScreen()) {
 #if BUILDFLAG(ENABLE_OSR)
         GetOffScreenRenderWidgetHostView()->SendMouseEvent(mouse_event);
+        auto* rwh = view->GetRenderWidgetHost();
+        auto cursor_pos = gfx::PointF(mouse_event.PositionInWidget().x(),
+                                      mouse_event.PositionInWidget().y());
+        if (type == blink::WebInputEvent::Type::kMouseMove) {
+          if (!dragging_ && start_dragging_) {
+            rwh->DragTargetDragEnter(drop_data_, cursor_pos, cursor_pos,
+                drag_ops_, mouse_event.GetModifiers(),
+                base::BindOnce([](::ui::mojom::DragOperation) {}));
+            dragging_ = true;
+          } else if (dragging_) {
+            rwh->DragTargetDragOver(cursor_pos, cursor_pos, drag_ops_,
+                mouse_event.GetModifiers(),
+                base::BindOnce([](::ui::mojom::DragOperation) {}));
+
+            auto old_content_rect = drag_image_content_rect_;
+
+            auto scale_factor = GetScaleFactor();
+            auto cursor_pos_i = gfx::Point(cursor_pos.x(),
+                                           cursor_pos.y());
+            auto drag_image_top_left_corner = (cursor_pos_i - drag_offset_);
+            auto drag_image_position_scaled =
+                gfx::Point(scale_factor * drag_image_top_left_corner.x(),
+                           scale_factor * drag_image_top_left_corner.y());
+            MakeDragImageMailbox(drag_image_position_scaled);
+
+            auto damage_rect =
+                gfx::UnionRects(old_content_rect, drag_image_content_rect_);
+            InvalidateRect(damage_rect);
+          }
+        } else if (type == blink::WebInputEvent::Type::kMouseUp && dragging_) {
+          rwh->DragTargetDrop(drop_data_, cursor_pos, cursor_pos,
+                              mouse_event.GetModifiers(),
+                              base::BindOnce([]() {}));
+          rwh->DragSourceEndedAt(cursor_pos, cursor_pos,
+                                 (ui::mojom::DragOperation)drag_ops_,
+                                 base::BindOnce([]() {}));
+          rwh->DragSourceSystemDragEnded();
+
+          drop_data_ = {};
+          start_dragging_ = dragging_ = false;
+          drag_ended_ = true;
+          drag_ops_ = blink::kDragOperationNone;
+
+          if (drag_image_mailbox_.has_value()) {
+            DestroyDragImageMailbox(false);
+            InvalidateRect(drag_image_content_rect_);
+          }
+        }
 #endif
       } else {
         rwh->ForwardMouseEvent(mouse_event);
@@ -2987,6 +3054,17 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
   } else if (type == blink::WebInputEvent::Type::kMouseWheel) {
     blink::WebMouseWheelEvent mouse_wheel_event;
     if (gin::ConvertFromV8(isolate, input_event, &mouse_wheel_event)) {
+      // Chromium expects phase info in wheel events (and applies a
+      // DCHECK to verify it). See: https://crbug.com/756524.
+      mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
+      mouse_wheel_event.event_action =
+          blink::WebMouseWheelEvent::EventAction::kScroll;
+      mouse_wheel_event.momentum_phase =
+          blink::WebMouseWheelEvent::kPhaseBlocked;
+      mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
+      mouse_wheel_event.dispatch_type =
+          blink::WebInputEvent::DispatchType::kBlocking;
+
       if (IsOffScreen()) {
 #if BUILDFLAG(ENABLE_OSR)
         GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
@@ -2999,14 +3077,24 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
         mouse_wheel_event.dispatch_type =
             blink::WebInputEvent::DispatchType::kBlocking;
         rwh->ForwardWheelEvent(mouse_wheel_event);
+      }
 
-        // Send a synthetic wheel event with phaseEnded to finish scrolling.
-        mouse_wheel_event.has_synthetic_phase = true;
-        mouse_wheel_event.delta_x = 0;
-        mouse_wheel_event.delta_y = 0;
-        mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
-        mouse_wheel_event.dispatch_type =
-            blink::WebInputEvent::DispatchType::kEventNonBlocking;
+      // Send a synthetic wheel event with phaseEnded to finish scrolling.
+      mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
+      mouse_wheel_event.has_synthetic_phase = true;
+      mouse_wheel_event.delta_x = 0;
+      mouse_wheel_event.delta_y = 0;
+      mouse_wheel_event.wheel_ticks_x = 0;
+      mouse_wheel_event.wheel_ticks_y = 0;
+      mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
+      mouse_wheel_event.dispatch_type =
+          blink::WebInputEvent::DispatchType::kEventNonBlocking;
+      if (IsOffScreen()) {
+  #if BUILDFLAG(ENABLE_OSR)
+        GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
+            mouse_wheel_event);
+  #endif
+      } else {
         rwh->ForwardWheelEvent(mouse_wheel_event);
       }
       return;
@@ -3186,7 +3274,59 @@ bool WebContents::IsOffScreen() const {
 
 #if BUILDFLAG(ENABLE_OSR)
 void WebContents::OnPaint(const gfx::Rect& dirty_rect, const SkBitmap& bitmap) {
-  Emit("paint", dirty_rect, gfx::Image::CreateFrom1xBitmap(bitmap));
+  for (PaintObserver& observer : paint_observers_)
+    observer.OnPaint(dirty_rect, bitmap);
+  // Emit("paint", gin::ConvertToV8(isolate(), dirty_rect),
+  //      gfx::Image::CreateFrom1xBitmap(bitmap));
+}
+
+void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
+                                 const gpu::SyncToken& sync_token,
+                                 const gfx::Rect& content_rect,
+                                 const gfx::Rect& damage_rect,
+                                 bool is_popup,
+                                 void (*callback)(void*, void*),
+                                 void* context) {
+  if (!paint_observers_.empty()) {
+    for (PaintObserver& observer : paint_observers_) {
+      observer.OnTexturePaint(std::move(mailbox), std::move(sync_token),
+                              std::move(content_rect), is_popup, callback,
+                              context);
+    }
+
+    if (drag_image_mailbox_.has_value()) {
+      for (PaintObserver& observer : paint_observers_) {
+        observer.OnTexturePaint(
+            gpu::Mailbox(), gpu::SyncToken(), gfx::Rect(), true,
+            nullptr, nullptr);
+        observer.OnTexturePaint(
+            drag_image_mailbox_.value(), drag_image_sync_token_.value(),
+            drag_image_content_rect_, true, nullptr, nullptr);
+      }
+    } else if (drag_ended_) {
+      drag_ended_ = false;
+      for (PaintObserver& observer : paint_observers_) {
+        observer.OnTexturePaint(gpu::Mailbox(), gpu::SyncToken(), gfx::Rect(),
+                                true, nullptr, nullptr);
+      }
+    }
+  } else {
+    callback(context, nullptr);
+  }
+}
+
+void WebContents::InvalidateRect(gfx::Rect const& rect) {
+    if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+      auto* osr_rwhv = GetOffScreenRenderWidgetHostView();
+      if (osr_rwhv)
+        osr_rwhv->InvalidateRect(rect);
+#endif
+    } else {
+      auto* const window = owner_window();
+      if (window)
+        window->Invalidate();
+    }
 }
 
 void WebContents::StartPainting() {
@@ -3216,6 +3356,17 @@ int WebContents::GetFrameRate() const {
   auto* osr_wcv = GetOffScreenWebContentsView();
   return osr_wcv ? osr_wcv->GetFrameRate() : 0;
 }
+
+void WebContents::SetScaleFactor(float pixel_scale_factor) {
+  auto* osr_wcv = GetOffScreenWebContentsView();
+  if (osr_wcv)
+    osr_wcv->SetScaleFactor(pixel_scale_factor);
+}
+
+float WebContents::GetScaleFactor() const {
+  auto* osr_wcv = GetOffScreenWebContentsView();
+  return osr_wcv ? osr_wcv->GetScaleFactor() : 0.0f;
+}
 #endif
 
 void WebContents::Invalidate() {
@@ -3234,10 +3385,11 @@ void WebContents::Invalidate() {
 
 gfx::Size WebContents::GetSizeForNewRenderView(content::WebContents* wc) {
   if (IsOffScreen() && wc == web_contents()) {
-    auto* relay = NativeWindowRelay::FromWebContents(web_contents());
+    auto* relay = OffscreenWindowRelay::FromWebContents(web_contents());
     if (relay) {
-      auto* owner_window = relay->GetNativeWindow();
-      return owner_window ? owner_window->GetSize() : gfx::Size();
+      auto* offscreen_window = relay->GetOffscreenWindow();
+      return offscreen_window ? offscreen_window->GetInternalSize()
+                              : gfx::Size();
     }
   }
 
@@ -3266,6 +3418,12 @@ void WebContents::SetZoomFactor(gin_helper::ErrorThrower thrower,
 double WebContents::GetZoomFactor() const {
   auto level = GetZoomLevel();
   return blink::PageZoomLevelToZoomFactor(level);
+}
+
+void WebContents::SetPageScale(double scale) {
+  auto* frame = static_cast<content::RenderFrameHostImpl*>(
+      web_contents()->GetMainFrame());
+  frame->GetAssociatedLocalMainFrame()->SetScaleFactorCorrection(scale);
 }
 
 void WebContents::SetTemporaryZoomLevel(double level) {
@@ -3977,12 +4135,17 @@ v8::Local<v8::ObjectTemplate> WebContents::FillObjectTemplate(
       .SetMethod("isPainting", &WebContents::IsPainting)
       .SetMethod("setFrameRate", &WebContents::SetFrameRate)
       .SetMethod("getFrameRate", &WebContents::GetFrameRate)
+      .SetProperty("frameRate", &WebContents::GetFrameRate,
+                   &WebContents::SetFrameRate)
+      .SetProperty("scaleFactor", &WebContents::GetScaleFactor,
+                   &WebContents::SetScaleFactor)
 #endif
       .SetMethod("invalidate", &WebContents::Invalidate)
       .SetMethod("setZoomLevel", &WebContents::SetZoomLevel)
       .SetMethod("getZoomLevel", &WebContents::GetZoomLevel)
       .SetMethod("setZoomFactor", &WebContents::SetZoomFactor)
       .SetMethod("getZoomFactor", &WebContents::GetZoomFactor)
+      .SetMethod("setPageScale", &WebContents::SetPageScale)
       .SetMethod("getType", &WebContents::GetType)
       .SetMethod("_getPreloadPaths", &WebContents::GetPreloadPaths)
       .SetMethod("getLastWebPreferences", &WebContents::GetLastWebPreferences)
@@ -4035,6 +4198,112 @@ const char* WebContents::GetTypeName() {
 ElectronBrowserContext* WebContents::GetBrowserContext() const {
   return static_cast<ElectronBrowserContext*>(
       web_contents()->GetBrowserContext());
+}
+
+void WebContents::StartDragging(const content::DropData& drop_data,
+                                blink::DragOperationsMask ops,
+                                gfx::ImageSkia drag_image,
+                                gfx::Vector2d const& offset) {
+  start_dragging_ = true;
+  drop_data_ = drop_data;
+  drag_ops_ = ops;
+  gfx::Size scaled_size(drag_image.width(), drag_image.height());
+  drag_image_content_rect_ = gfx::Rect(gfx::Point(), scaled_size);
+  drag_offset_ = offset;
+  drag_image_ = drag_image;
+}
+
+void WebContents::MakeDragImageMailbox(gfx::Point const& position) {
+  float dx = 0, dy = 0;
+  auto screen_size = GetOffScreenRenderWidgetHostView()->SizeInPixels();
+
+  auto max_x = screen_size.width() - 1;
+  auto max_y = screen_size.height() - 1;
+
+  if(position.x() < 0)
+      dx = -position.x();
+  if(position.y() < 0)
+      dy = -position.y();
+  if (position.x() >= max_x)
+      dx = max_x - position.x();
+  if (position.y() >= max_y)
+      dy = max_y - position.y();
+
+  auto drag_correction = gfx::Vector2d(dx, dy);
+
+  drag_image_content_rect_.set_x(std::min(std::max(position.x(), 0), max_x));
+  drag_image_content_rect_.set_y(std::min(std::max(position.y(), 0), max_y));
+
+  if (drag_correction == drag_correction_ && drag_image_mailbox_) {
+      return;
+  }
+
+  drag_correction_ = drag_correction;
+
+  DestroyDragImageMailbox(false);
+
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+
+  auto& rep = drag_image_.GetRepresentation(GetScaleFactor());
+  auto* bitmap = &rep.GetBitmap();
+  if (!bitmap) {
+    return;
+  }
+
+  // Flip the drag image
+  SkBitmap bitmap_copy;
+  bitmap_copy.allocN32Pixels(bitmap->width(), bitmap->height());
+  auto surf = SkSurface::MakeRaster(bitmap_copy.info());
+  auto* canvas = surf->getCanvas();
+  canvas->scale(1, -1);
+  canvas->translate(0, -bitmap_copy.height());
+  canvas->translate(-dx, -dy);
+  canvas->writePixels(*bitmap, 0, 0);
+  auto image = surf->makeImageSnapshot();
+  image->readPixels(bitmap_copy.pixmap(), 0, 0);
+
+  void* pixel_data = bitmap_copy.getPixels();
+  auto pixel_size = bitmap_copy.computeByteSize();
+
+  if (pixel_size == 0) {
+    return;
+  }
+  base::span<const uint8_t> pixels =
+      base::make_span(reinterpret_cast<const uint8_t*>(pixel_data), pixel_size);
+  auto size = gfx::Size(bitmap->width(), bitmap->height());
+
+  constexpr uint32_t kUsage = gpu::SHARED_IMAGE_USAGE_GLES2 |
+                              gpu::SHARED_IMAGE_USAGE_GLES2_FRAMEBUFFER_HINT |
+                              gpu::SHARED_IMAGE_USAGE_DISPLAY;
+
+  drag_image_mailbox_ = sii->CreateSharedImage(
+      viz::ResourceFormat::RGBA_8888, size, gfx::ColorSpace(),
+      kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType, kUsage, pixels);
+  drag_image_sync_token_ = sii->GenVerifiedSyncToken();
+}
+
+void WebContents::DestroyDragImageMailbox(bool force_destruct) {
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+
+  if (drag_image_mailbox_destroying_) {
+    sii->DestroySharedImage(*drag_image_sync_token_destroying_,
+        *drag_image_mailbox_destroying_);
+    drag_image_mailbox_destroying_.reset();
+    drag_image_sync_token_destroying_.reset();
+  }
+
+  drag_image_mailbox_destroying_ = drag_image_mailbox_;
+  drag_image_sync_token_destroying_ = drag_image_sync_token_;
+  drag_image_mailbox_.reset();
+  drag_image_sync_token_.reset();
+
+  if (force_destruct) {
+      DestroyDragImageMailbox(false);
+  }
 }
 
 // static

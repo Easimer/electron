@@ -363,6 +363,7 @@ class WebFrameRenderer : public gin::Wrappable<WebFrameRenderer>,
         .SetMethod("getZoomLevel", &WebFrameRenderer::GetZoomLevel)
         .SetMethod("setZoomFactor", &WebFrameRenderer::SetZoomFactor)
         .SetMethod("getZoomFactor", &WebFrameRenderer::GetZoomFactor)
+        .SetMethod("setPageScale", &WebFrameRenderer::SetPageScale)
         .SetMethod("getWebPreference", &WebFrameRenderer::GetWebPreference)
 #if BUILDFLAG(ENABLE_BUILTIN_SPELLCHECKER)
         .SetMethod("isWordMisspelled", &WebFrameRenderer::IsWordMisspelled)
@@ -487,6 +488,21 @@ class WebFrameRenderer : public gin::Wrappable<WebFrameRenderer>,
     double zoom_level = GetZoomLevel(isolate);
     return blink::PageZoomLevelToZoomFactor(zoom_level);
   }
+
+void SetPageScale(gin_helper::ErrorThrower thrower,
+                  v8::Local<v8::Object> window,
+                  double scale) {
+  content::RenderFrame* render_frame = GetRenderFrame(window);
+  if (!render_frame) {
+    thrower.ThrowError(
+        "Render frame was torn down before webFrame.setPageScale "
+        "could be executed");
+    return;
+  }
+
+  blink::WebFrame* web_frame = render_frame->GetWebFrame();
+  web_frame->View()->SetScaleFactorCorrection(scale);
+}
 
   v8::Local<v8::Value> GetWebPreference(v8::Isolate* isolate,
                                         std::string pref_name) {

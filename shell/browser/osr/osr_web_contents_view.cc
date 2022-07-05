@@ -8,21 +8,30 @@
 #include "content/public/browser/render_view_host.h"
 #include "ui/display/screen.h"
 #include "ui/display/screen_info.h"
+#include "shell/browser/api/electron_api_web_contents.h"
 
 namespace electron {
 
 OffScreenWebContentsView::OffScreenWebContentsView(
     bool transparent,
-    const OnPaintCallback& callback)
-    : transparent_(transparent), callback_(callback) {
+    float scale_factor,
+    const OnPaintCallback& callback,
+    const OnTexturePaintCallback& texture_callback)
+    : offscreen_window_(nullptr),
+      transparent_(transparent),
+      scale_factor_(scale_factor),
+      callback_(callback),
+      texture_callback_(texture_callback) {
 #if BUILDFLAG(IS_MAC)
   PlatformCreate();
 #endif
+
+
 }
 
 OffScreenWebContentsView::~OffScreenWebContentsView() {
-  if (native_window_)
-    native_window_->RemoveObserver(this);
+  if (offscreen_window_)
+    offscreen_window_->RemoveObserver(this);
 
 #if BUILDFLAG(IS_MAC)
   PlatformDestroy();
@@ -37,14 +46,15 @@ void OffScreenWebContentsView::SetWebContents(
     GetView()->InstallTransparency();
 }
 
-void OffScreenWebContentsView::SetNativeWindow(NativeWindow* window) {
-  if (native_window_)
-    native_window_->RemoveObserver(this);
+void OffScreenWebContentsView::SetOffscreenWindow(
+    api::OffscreenWindow* window) {
+  if (offscreen_window_)
+    offscreen_window_->RemoveObserver(this);
 
-  native_window_ = window;
+  offscreen_window_ = window;
 
-  if (native_window_)
-    native_window_->AddObserver(this);
+  if (offscreen_window_)
+    offscreen_window_->AddObserver(this);
 
   OnWindowResize();
 }
@@ -52,37 +62,27 @@ void OffScreenWebContentsView::SetNativeWindow(NativeWindow* window) {
 void OffScreenWebContentsView::OnWindowResize() {
   // In offscreen mode call RenderWidgetHostView's SetSize explicitly
   if (GetView())
-    GetView()->SetSize(GetSize());
+    GetView()->SetSize(GetInitialSize());
 }
 
 void OffScreenWebContentsView::OnWindowClosed() {
-  if (native_window_) {
-    native_window_->RemoveObserver(this);
-    native_window_ = nullptr;
+  if (offscreen_window_) {
+    offscreen_window_->RemoveObserver(this);
+    offscreen_window_ = nullptr;
   }
-}
-
-gfx::Size OffScreenWebContentsView::GetSize() {
-  return native_window_ ? native_window_->GetSize() : gfx::Size();
 }
 
 #if !BUILDFLAG(IS_MAC)
 gfx::NativeView OffScreenWebContentsView::GetNativeView() const {
-  if (!native_window_)
-    return gfx::NativeView();
-  return native_window_->GetNativeView();
+  return gfx::NativeView();
 }
 
 gfx::NativeView OffScreenWebContentsView::GetContentNativeView() const {
-  if (!native_window_)
-    return gfx::NativeView();
-  return native_window_->GetNativeView();
+  return gfx::NativeView();
 }
 
 gfx::NativeWindow OffScreenWebContentsView::GetTopLevelNativeWindow() const {
-  if (!native_window_)
-    return gfx::NativeWindow();
-  return native_window_->GetNativeWindow();
+  return gfx::NativeWindow();
 }
 #endif
 
@@ -105,7 +105,11 @@ content::DropData* OffScreenWebContentsView::GetDropData() const {
 }
 
 gfx::Rect OffScreenWebContentsView::GetViewBounds() const {
-  return GetView() ? GetView()->GetViewBounds() : gfx::Rect();
+  if (offscreen_window_) {
+    return gfx::Rect(offscreen_window_->GetInternalSize());
+  } else {
+    return gfx::Rect();
+  }
 }
 
 void OffScreenWebContentsView::CreateView(gfx::NativeView context) {}
@@ -119,8 +123,7 @@ OffScreenWebContentsView::CreateViewForWidget(
   }
 
   return new OffScreenRenderWidgetHostView(
-      transparent_, painting_, GetFrameRate(), callback_, render_widget_host,
-      nullptr, GetSize());
+      this, render_widget_host, nullptr, painting_, frame_rate_, scale_factor_);
 }
 
 content::RenderWidgetHostViewBase*
@@ -134,9 +137,9 @@ OffScreenWebContentsView::CreateViewForChildWidget(
           ? web_contents_impl->GetOuterWebContents()->GetRenderWidgetHostView()
           : web_contents_impl->GetRenderWidgetHostView());
 
-  return new OffScreenRenderWidgetHostView(transparent_, painting_,
-                                           view->GetFrameRate(), callback_,
-                                           render_widget_host, view, GetSize());
+  return new OffScreenRenderWidgetHostView(this, render_widget_host, view,
+                                           painting_, view->GetFrameRate(),
+                                           scale_factor_);
 }
 
 void OffScreenWebContentsView::SetPageTitle(const std::u16string& title) {}
@@ -148,7 +151,11 @@ void OffScreenWebContentsView::RenderViewReady() {
 
 void OffScreenWebContentsView::RenderViewHostChanged(
     content::RenderViewHost* old_host,
-    content::RenderViewHost* new_host) {}
+    content::RenderViewHost* new_host) {
+  // Notify new RenderWidgetHostView of the size of the window, since it could
+  // have changed since initialization
+  OnWindowResize();
+}
 
 void OffScreenWebContentsView::SetOverscrollControllerEnabled(bool enabled) {}
 
@@ -167,13 +174,43 @@ void OffScreenWebContentsView::StartDragging(
     const gfx::Vector2d& image_offset,
     const blink::mojom::DragEventSourceInfo& event_info,
     content::RenderWidgetHostImpl* source_rwh) {
-  if (web_contents_)
+  if (web_contents_) {
+    auto* contents_delegate =
+        static_cast<electron::api::WebContents*>(web_contents_->GetDelegate());
+    if (contents_delegate) {
+      contents_delegate->StartDragging(drop_data, allowed_ops, image,
+                                       image_offset);
+      return;
+    }
+  } else {
     static_cast<content::WebContentsImpl*>(web_contents_)
         ->SystemDragEnded(source_rwh);
+  }
 }
 
 void OffScreenWebContentsView::UpdateDragCursor(
     ui::mojom::DragOperation operation) {}
+
+bool OffScreenWebContentsView::IsTransparent() const {
+  return transparent_;
+}
+
+const OnPaintCallback& OffScreenWebContentsView::GetPaintCallback() const {
+  return callback_;
+}
+
+const OnTexturePaintCallback&
+OffScreenWebContentsView::GetTexturePaintCallback() const {
+  return texture_callback_;
+}
+
+gfx::Size OffScreenWebContentsView::GetInitialSize() const {
+  if (offscreen_window_) {
+    return offscreen_window_->GetInternalSize();
+  } else {
+    return gfx::Size();
+  }
+}
 
 void OffScreenWebContentsView::SetPainting(bool painting) {
   auto* view = GetView();
@@ -189,6 +226,24 @@ bool OffScreenWebContentsView::IsPainting() const {
     return view->IsPainting();
   } else {
     return painting_;
+  }
+}
+
+void OffScreenWebContentsView::SetScaleFactor(float scale_factor) {
+  auto* view = GetView();
+  if (view != nullptr) {
+    view->SetManualScaleFactor(scale_factor);
+  } else {
+    scale_factor_ = scale_factor;
+  }
+}
+
+float OffScreenWebContentsView::GetScaleFactor() const {
+  auto* view = GetView();
+  if (view != nullptr) {
+    return view->GetScaleFactor();
+  } else {
+    return scale_factor_;
   }
 }
 

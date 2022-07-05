@@ -93,6 +93,9 @@ const char kStandardWindow[] = "standardWindow";
 // Default browser window background color.
 const char kBackgroundColor[] = "backgroundColor";
 
+// Default offscreen window scale factor.
+const char kScaleFactor[] = "scaleFactor";
+
 // Whether the window should have a shadow.
 const char kHasShadow[] = "hasShadow";
 

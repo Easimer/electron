@@ -188,10 +188,50 @@ declare namespace Electron {
     setBackgroundThrottling(allowed: boolean): void;
   }
 
+  class OffscreenHostView {
+    childCount: number;
+    addWebContents(view: WebContentsView): void;
+    removeWebContents(id: number): void;
+  }
+
+  class OffscreenHostWindow extends BaseWindow {}
+
+  class OffscreenWindow {
+    webContents: WebContents;
+    webContentsView: WebContentsView;
+    _init(): void;
+    getURL(): string;
+    send(channel: string, ...args: any[]): void;
+    openDevTools(options?: Electron.OpenDevToolsOptions): void;
+    closeDevTools(): void;
+    isDevToolsOpened(): void;
+    isDevToolsFocused(): void;
+    toggleDevTools(): void;
+    inspectElement(x: number, y: number): void;
+    inspectSharedWorker(): void;
+    inspectServiceWorker(): void;
+    getBackgroundThrottling(): void;
+    setBackgroundThrottling(allowed: boolean): void;
+    setOwnerWindow(owner: OffscreenHostWindow): void;
+    focus(): void;
+    on(event: string, listener: (event: Event, ...args: any[]) => void): this;
+    once(event: string, listener: (event: Event, ...args: any[]) => void): this;
+    emit(event: string, ...args: any[]): this;
+    loadURL(url: string, options: Electron.LoadURLOptions): void;
+    loadFile(filename: string, options: Electron.LoadFileOptions): void;
+    reload(): void;
+    showDefinitionForSelection(): void;
+    capturePage(rect?: Electron.Rectangle): void;
+    fromId(id: number): void;
+    getAllWindows(): OffscreenWindow[];
+  }
+
   namespace Main {
     class BaseWindow extends Electron.BaseWindow {}
     class View extends Electron.View {}
     class WebContentsView extends Electron.WebContentsView {}
+    class OffscreenHostView extends Electron.OffscreenHostView {}
+    class OffscreenWindow extends Electron.OffscreenWindow {}
   }
 }
 

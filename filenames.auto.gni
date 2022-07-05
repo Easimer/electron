@@ -209,6 +209,8 @@ auto_filenames = {
     "lib/browser/api/net-log.ts",
     "lib/browser/api/net.ts",
     "lib/browser/api/notification.ts",
+    "lib/browser/api/offscreen-host-view.ts",
+    "lib/browser/api/offscreen-window.ts",
     "lib/browser/api/power-monitor.ts",
     "lib/browser/api/power-save-blocker.ts",
     "lib/browser/api/protocol.ts",

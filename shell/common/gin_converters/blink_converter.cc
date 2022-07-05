@@ -325,6 +325,11 @@ bool Converter<blink::WebMouseEvent>::FromV8(v8::Isolate* isolate,
   dict.Get("movementX", &out->movement_x);
   dict.Get("movementY", &out->movement_y);
   dict.Get("clickCount", &out->click_count);
+
+  int pointer_type = static_cast<int>(ui::EventPointerType::kUnknown);
+  dict.Get("pointer_type", &pointer_type);
+  out->pointer_type = static_cast<ui::EventPointerType>(pointer_type);
+
   return true;
 }
 
@@ -337,6 +342,11 @@ bool Converter<blink::WebMouseWheelEvent>::FromV8(
     return false;
   if (!ConvertFromV8(isolate, val, static_cast<blink::WebMouseEvent*>(out)))
     return false;
+  float x = 0.f;
+  float y = 0.f;
+  if (!dict.Get("x", &x) || !dict.Get("y", &y))
+    return false;
+  out->SetPositionInWidget(x, y);
   dict.Get("deltaX", &out->delta_x);
   dict.Get("deltaY", &out->delta_y);
   dict.Get("wheelTicksX", &out->wheel_ticks_x);

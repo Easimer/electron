@@ -394,6 +394,9 @@ void ElectronMainDelegate::PreSandboxStartup() {
 #if BUILDFLAG(IS_MAC)
     // Enable AVFoundation.
     command_line->AppendSwitch("enable-avfoundation");
+    command_line->AppendSwitch(::switches::kDisableRemoteCoreAnimation);
+    command_line->AppendSwitch(
+        ::switches::kDisableGpuMemoryBufferCompositorResources);
 #endif
   }
 }

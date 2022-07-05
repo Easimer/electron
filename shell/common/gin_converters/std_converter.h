@@ -163,11 +163,11 @@ struct Converter<std::map<K, V>> {
       if (maybe_v8value.IsEmpty())
         return false;
       K key;
-      V value;
+      V val;
       if (!ConvertFromV8(isolate, v8key, &key) ||
-          !ConvertFromV8(isolate, maybe_v8value.ToLocalChecked(), &value))
+          !ConvertFromV8(isolate, maybe_v8value.ToLocalChecked(), &val))
         return false;
-      (*out)[key] = std::move(value);
+      (*out)[key] = std::move(val);
     }
     return true;
   }

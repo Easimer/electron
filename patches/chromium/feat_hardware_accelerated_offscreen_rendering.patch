@@ -1,0 +1,2340 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Tue, 5 Jul 2022 15:21:56 +0200
+Subject: feat: hardware accelerated offscreen rendering
+
+Patch-filename: hardware_accelerated_offscreen_rendering.patch
+
+diff --git a/components/viz/common/BUILD.gn b/components/viz/common/BUILD.gn
+index 7abb58d21124fa62d8e343527066d43c50066b1c..5b7ce4a4e41b5d570394d083e58d52611216f9bf 100644
+--- a/components/viz/common/BUILD.gn
++++ b/components/viz/common/BUILD.gn
+@@ -15,6 +15,19 @@ source_set("resource_format") {
+   sources = [ "resources/resource_format.h" ]
+ }
+ 
++import("//mojo/public/tools/bindings/mojom.gni")
++
++mojom("single_release_callback") {
++  sources = [
++    "resources/single_release_callback.mojom",
++  ]
++
++  public_deps = [
++    "//gpu/ipc/common:interfaces",
++  ]
++}
++
++
+ buildflag_header("buildflags") {
+   header = "buildflags.h"
+   flags = [ "USE_VIZ_DEBUGGER=$use_viz_debugger" ]
+@@ -264,6 +277,8 @@ viz_component("common") {
+     "resources/returned_resource.h",
+     "resources/shared_bitmap.cc",
+     "resources/shared_bitmap.h",
++    "resources/single_release_callback.cc",
++    "resources/single_release_callback.h",
+     "resources/transferable_resource.cc",
+     "resources/transferable_resource.h",
+     "shared_element_resource_id.cc",
+@@ -327,6 +342,7 @@ viz_component("common") {
+     "//mojo/public/cpp/base",
+     "//mojo/public/cpp/system",
+     "//services/tracing/public/cpp:cpp",
++    ":single_release_callback",
+     "//third_party/libyuv",
+     "//ui/gfx",
+     "//ui/gfx:color_space",
+diff --git a/components/viz/common/frame_sinks/begin_frame_source.h b/components/viz/common/frame_sinks/begin_frame_source.h
+index 3b3ca2b8a48a1822072cb4d54d9d33a76ca655a4..4f74ec76fb254211c81af1206da0179c573e600d 100644
+--- a/components/viz/common/frame_sinks/begin_frame_source.h
++++ b/components/viz/common/frame_sinks/begin_frame_source.h
+@@ -371,7 +371,7 @@ class VIZ_COMMON_EXPORT DelayBasedBeginFrameSource
+   // DelayBasedTimeSourceClient implementation.
+   void OnTimerTick() override;
+ 
+- private:
++ protected:
+   // The created BeginFrameArgs' sequence_number is calculated based on what
+   // interval |frame_time| is in. For example, if |last_frame_time_| is 100,
+   // |next_sequence_number_| is 5, |last_timebase_| is 110 and the interval is
+diff --git a/components/viz/common/resources/single_release_callback.cc b/components/viz/common/resources/single_release_callback.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..acea5762079c97b81d4bb9432618a4bfea80d19b
+--- /dev/null
++++ b/components/viz/common/resources/single_release_callback.cc
+@@ -0,0 +1,27 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/viz/common/resources/single_release_callback.h"
++
++#include "base/callback_helpers.h"
++#include "base/check.h"
++
++namespace viz {
++
++SingleReleaseCallback::SingleReleaseCallback(ReleaseCallback callback)
++    : callback_(std::move(callback)) {
++  DCHECK(!callback_.is_null())
++      << "Use a NULL SingleReleaseCallback for an empty callback.";
++}
++
++SingleReleaseCallback::~SingleReleaseCallback() = default;
++
++void SingleReleaseCallback::Run(const gpu::SyncToken& sync_token,
++                                bool is_lost) {
++  DCHECK(!callback_.is_null())
++      << "SingleReleaseCallback was run more than once.";
++  std::move(callback_).Run(sync_token, is_lost);
++}
++
++}  // namespace viz
+diff --git a/components/viz/common/resources/single_release_callback.h b/components/viz/common/resources/single_release_callback.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..69a0480e1637deda204ef0f6861aabc36a80f49d
+--- /dev/null
++++ b/components/viz/common/resources/single_release_callback.h
+@@ -0,0 +1,35 @@
++// Copyright 2013 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_VIZ_COMMON_RESOURCES_SINGLE_RELEASE_CALLBACK_H_
++#define COMPONENTS_VIZ_COMMON_RESOURCES_SINGLE_RELEASE_CALLBACK_H_
++
++#include <memory>
++
++#include "base/memory/ptr_util.h"
++#include "components/viz/common/resources/release_callback.h"
++#include "components/viz/common/viz_common_export.h"
++#include "components/viz/common/resources/single_release_callback.mojom.h"
++
++namespace viz {
++
++class VIZ_COMMON_EXPORT SingleReleaseCallback : public mojom::SingleReleaseCallback {
++ public:
++  static std::unique_ptr<SingleReleaseCallback> Create(ReleaseCallback cb) {
++    return base::WrapUnique(new SingleReleaseCallback(std::move(cb)));
++  }
++
++  ~SingleReleaseCallback() override;
++
++  void Run(const gpu::SyncToken& sync_token, bool is_lost) override;
++
++ private:
++  explicit SingleReleaseCallback(ReleaseCallback callback);
++
++  ReleaseCallback callback_;
++};
++
++}  // namespace viz
++
++#endif  // COMPONENTS_VIZ_COMMON_RESOURCES_SINGLE_RELEASE_CALLBACK_H_
+diff --git a/components/viz/common/resources/single_release_callback.mojom b/components/viz/common/resources/single_release_callback.mojom
+new file mode 100644
+index 0000000000000000000000000000000000000000..3448ed30c445f2078fbc55d80ca527d6664e6d1f
+--- /dev/null
++++ b/components/viz/common/resources/single_release_callback.mojom
+@@ -0,0 +1,7 @@
++module viz.mojom;
++
++import "gpu/ipc/common/sync_token.mojom";
++
++interface SingleReleaseCallback {
++  Run(gpu.mojom.SyncToken sync_token, bool is_lost);
++};
+diff --git a/components/viz/host/host_display_client.cc b/components/viz/host/host_display_client.cc
+index 66d3ae8ecc299456de8ff621b2957f9d18e984a1..8385222b3a7684a1be0ebf835fa24a9a5a0f404f 100644
+--- a/components/viz/host/host_display_client.cc
++++ b/components/viz/host/host_display_client.cc
+@@ -6,6 +6,8 @@
+ 
+ #include "build/build_config.h"
+ #include "build/chromeos_buildflags.h"
++#include "components/viz/common/resources/single_release_callback.h"
++#include "mojo/public/cpp/bindings/remote.h"
+ 
+ #if BUILDFLAG(IS_APPLE)
+ #include "ui/accelerated_widget_mac/ca_layer_frame_sink.h"
+@@ -46,6 +48,23 @@ void HostDisplayClient::OnDisplayReceivedCALayerParams(
+ }
+ #endif
+ 
++void HostDisplayClient::IsOffscreen(IsOffscreenCallback callback) {
++  std::move(callback).Run(false);
++}
++
++void HostDisplayClient::BackingTextureCreated(const gpu::Mailbox& mailbox) {}
++
++void HostDisplayClient::OnSwapBuffers(
++    const gfx::Size& size,
++    const gpu::SyncToken& token,
++    mojo::PendingRemote<viz::mojom::SingleReleaseCallback> callback) {
++
++  mojo::Remote<viz::mojom::SingleReleaseCallback> callback_remote(
++        std::move(callback));
++
++  callback_remote->Run(gpu::SyncToken(), false);
++}
++
+ void HostDisplayClient::CreateLayeredWindowUpdater(
+     mojo::PendingReceiver<mojom::LayeredWindowUpdater> receiver) {
+ #if BUILDFLAG(IS_WIN)
+diff --git a/components/viz/host/host_display_client.h b/components/viz/host/host_display_client.h
+index e588d77072537b6b0760b278de72d69aa44f2b3f..bce9a72b4e44c8756dd2455ddbd5f160a0bd4a79 100644
+--- a/components/viz/host/host_display_client.h
++++ b/components/viz/host/host_display_client.h
+@@ -41,6 +41,15 @@ class VIZ_HOST_EXPORT HostDisplayClient : public mojom::DisplayClient {
+       const gfx::CALayerParams& ca_layer_params) override;
+ #endif
+ 
++  void IsOffscreen(IsOffscreenCallback callback) override;
++
++  void BackingTextureCreated(const gpu::Mailbox& mailbox) override;
++
++  void OnSwapBuffers(
++      const gfx::Size& size,
++      const gpu::SyncToken& token,
++      mojo::PendingRemote<viz::mojom::SingleReleaseCallback>) override;
++
+  protected:
+   void CreateLayeredWindowUpdater(
+       mojo::PendingReceiver<mojom::LayeredWindowUpdater> receiver) override;
+diff --git a/components/viz/service/BUILD.gn b/components/viz/service/BUILD.gn
+index 79283e753512855360127471d40e145c325649ca..e236dc2345ba0754691484268ebd6a2bcdec7c61 100644
+--- a/components/viz/service/BUILD.gn
++++ b/components/viz/service/BUILD.gn
+@@ -429,6 +429,7 @@ viz_source_set("gpu_service_dependencies") {
+     "//gpu/vulkan:buildflags",
+     "//media/gpu/ipc/service",
+     "//media/mojo/services",
++    "//services/viz/privileged/mojom/compositing",
+     "//services/viz/privileged/mojom/gl",
+     "//skia",
+     "//ui/latency:latency",
+diff --git a/components/viz/service/display_embedder/output_surface_provider_impl.cc b/components/viz/service/display_embedder/output_surface_provider_impl.cc
+index 4c4e631d5a1476eaad6f54281e6d6899070d1a65..98e67b17ae8a31da35a073832acaa727759f408f 100644
+--- a/components/viz/service/display_embedder/output_surface_provider_impl.cc
++++ b/components/viz/service/display_embedder/output_surface_provider_impl.cc
+@@ -147,7 +147,7 @@ std::unique_ptr<OutputSurface> OutputSurfaceProviderImpl::CreateOutputSurface(
+     {
+       gpu::ScopedAllowScheduleGpuTask allow_schedule_gpu_task;
+       output_surface = SkiaOutputSurfaceImpl::Create(
+-          gpu_dependency, renderer_settings, debug_settings);
++          gpu_dependency, renderer_settings, debug_settings, display_client);
+     }
+ 
+ #if BUILDFLAG(IS_ANDROID)
+diff --git a/components/viz/service/display_embedder/skia_output_device.cc b/components/viz/service/display_embedder/skia_output_device.cc
+index 8cada302a5c03e6a54d48ddb1383d0612751b4ab..76e3316a104ad63dc271d3a7813c77aa5822726d 100644
+--- a/components/viz/service/display_embedder/skia_output_device.cc
++++ b/components/viz/service/display_embedder/skia_output_device.cc
+@@ -9,6 +9,7 @@
+ 
+ #include "base/bind.h"
+ #include "base/check_op.h"
++#include "base/logging.h"
+ #include "base/notreached.h"
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
+@@ -111,6 +112,10 @@ SkiaOutputDevice::~SkiaOutputDevice() {
+     latency_tracker_runner_->DeleteSoon(FROM_HERE, std::move(latency_tracker_));
+ }
+ 
++const gfx::Size SkiaOutputDevice::size() {
++  return gfx::Size();
++}
++
+ std::unique_ptr<SkiaOutputDevice::ScopedPaint>
+ SkiaOutputDevice::BeginScopedPaint(bool allocate_frame_buffer) {
+   std::vector<GrBackendSemaphore> end_semaphores;
+@@ -189,6 +194,16 @@ void SkiaOutputDevice::SetDependencyTimings(base::TimeTicks task_ready) {
+   gpu_task_ready_ = task_ready;
+ }
+ 
++void SkiaOutputDevice::SetBufferCreationCallback(
++    BufferCreatedCallback callback) {
++  did_create_buffer_callback_ = std::move(callback);
++}
++
++void SkiaOutputDevice::SetSwapBuffersCallback(
++    SwapBuffersCallback callback) {
++  swap_buffers_callback_ = std::move(callback);
++}
++
+ void SkiaOutputDevice::StartSwapBuffers(BufferPresentedCallback feedback) {
+   DCHECK_LT(static_cast<int>(pending_swaps_.size()),
+             capabilities_.pending_swap_params.GetMax());
+@@ -257,6 +272,7 @@ void SkiaOutputDevice::FinishSwapBuffers(
+ 
+ void SkiaOutputDevice::SwapBuffersSkipped(BufferPresentedCallback feedback,
+                                           OutputSurfaceFrame frame) {
++  // LOG(INFO) << "SwapBuffersSkipped";
+   StartSwapBuffers(std::move(feedback));
+   // If there are no other pending swaps, we can immediately close out the
+   // "skipped" swap that was just enqueued. If there are outstanding pending
+diff --git a/components/viz/service/display_embedder/skia_output_device.h b/components/viz/service/display_embedder/skia_output_device.h
+index 35f45545e2f33e647fd437d3993dfea135d9b566..9aa392a5bc100e84783d04cd0ea35d4a44425410 100644
+--- a/components/viz/service/display_embedder/skia_output_device.h
++++ b/components/viz/service/display_embedder/skia_output_device.h
+@@ -13,6 +13,7 @@
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "build/build_config.h"
++#include "components/viz/common/resources/single_release_callback.mojom.h"
+ #include "components/viz/service/display/output_surface.h"
+ #include "components/viz/service/display/output_surface_frame.h"
+ #include "components/viz/service/display/overlay_processor_interface.h"
+@@ -90,10 +91,17 @@ class SkiaOutputDevice {
+ 
+   using BufferPresentedCallback =
+       base::OnceCallback<void(const gfx::PresentationFeedback& feedback)>;
++  using BufferCreatedCallback =
++      base::RepeatingCallback<void(const gpu::Mailbox& mailbox)>;
+   using DidSwapBufferCompleteCallback =
+       base::RepeatingCallback<void(gpu::SwapBuffersCompleteParams,
+                                    const gfx::Size& pixel_size,
+                                    gfx::GpuFenceHandle release_fence)>;
++  using SwapBuffersCallback =
++      base::RepeatingCallback<void(
++          const gfx::Size& size,
++          mojo::PendingRemote<viz::mojom::SingleReleaseCallback> callback)>;
++
+   SkiaOutputDevice(
+       GrDirectContext* gr_context,
+       gpu::MemoryTracker* memory_tracker,
+@@ -104,6 +112,8 @@ class SkiaOutputDevice {
+ 
+   virtual ~SkiaOutputDevice();
+ 
++  virtual const gfx::Size size();
++
+   // Begins a paint scope. The base implementation fails when the SkSurface
+   // cannot be initialized, but devices that don't draw to a SkSurface (i.e
+   // |SkiaOutputDeviceVulkanSecondaryCB|) can override this to bypass the
+@@ -187,6 +197,10 @@ class SkiaOutputDevice {
+ 
+   void SetDependencyTimings(base::TimeTicks task_ready);
+ 
++  void SetBufferCreationCallback(BufferCreatedCallback callback);
++
++  void SetSwapBuffersCallback(SwapBuffersCallback callback);
++
+  protected:
+   // Only valid between StartSwapBuffers and FinishSwapBuffers.
+   class SwapInfo {
+@@ -253,6 +267,8 @@ class SkiaOutputDevice {
+ 
+   uint64_t swap_id_ = 0;
+   DidSwapBufferCompleteCallback did_swap_buffer_complete_callback_;
++  BufferCreatedCallback did_create_buffer_callback_;
++  SwapBuffersCallback swap_buffers_callback_;
+ 
+   base::queue<SwapInfo> pending_swaps_;
+   base::TimeTicks viz_scheduled_draw_;
+diff --git a/components/viz/service/display_embedder/skia_output_device_offscreen.cc b/components/viz/service/display_embedder/skia_output_device_offscreen.cc
+index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..b06fa9ce7e27e4d3dc9c4a71386e30ef9fc76cbd 100644
+--- a/components/viz/service/display_embedder/skia_output_device_offscreen.cc
++++ b/components/viz/service/display_embedder/skia_output_device_offscreen.cc
+@@ -6,8 +6,14 @@
+ 
+ #include <utility>
+ 
++#include "base/logging.h"
++#include "components/viz/common/resources/resource_format_utils.h"
++#include "components/viz/common/resources/single_release_callback.h"
+ #include "gpu/command_buffer/service/skia_utils.h"
++#include "mojo/public/cpp/bindings/self_owned_receiver.h"
++#include "third_party/skia/include/core/SkCanvas.h"
+ #include "third_party/skia/include/core/SkSurface.h"
++#include "ui/gfx/buffer_format_util.h"
+ 
+ namespace viz {
+ 
+@@ -21,6 +27,7 @@ constexpr SkColorType kSurfaceColorType = kRGBA_8888_SkColorType;
+ 
+ SkiaOutputDeviceOffscreen::SkiaOutputDeviceOffscreen(
+     scoped_refptr<gpu::SharedContextState> context_state,
++    scoped_refptr<viz::SkiaOutputSurfaceImplOnGpu> impl_gpu,
+     gfx::SurfaceOrigin origin,
+     bool has_alpha,
+     gpu::MemoryTracker* memory_tracker,
+@@ -29,7 +36,10 @@ SkiaOutputDeviceOffscreen::SkiaOutputDeviceOffscreen(
+                        memory_tracker,
+                        did_swap_buffer_complete_callback),
+       context_state_(context_state),
++      impl_gpu_(impl_gpu),
+       has_alpha_(has_alpha) {
++  task_runner_ = base::ThreadTaskRunnerHandle::Get();
++
+   capabilities_.uses_default_gl_framebuffer = false;
+   capabilities_.output_surface_origin = origin;
+   capabilities_.supports_post_sub_buffer = true;
+@@ -50,6 +60,10 @@ SkiaOutputDeviceOffscreen::~SkiaOutputDeviceOffscreen() {
+   DiscardBackbuffer();
+ }
+ 
++const gfx::Size SkiaOutputDeviceOffscreen::size() {
++  return size_;
++}
++
+ bool SkiaOutputDeviceOffscreen::Reshape(const gfx::Size& size,
+                                         float device_scale_factor,
+                                         const gfx::ColorSpace& color_space,
+@@ -68,11 +82,21 @@ bool SkiaOutputDeviceOffscreen::Reshape(const gfx::Size& size,
+ void SkiaOutputDeviceOffscreen::SwapBuffers(BufferPresentedCallback feedback,
+                                             OutputSurfaceFrame frame) {
+   // Reshape should have been called first.
+-  DCHECK(backend_texture_.isValid());
++  DCHECK(image_);
+ 
+   StartSwapBuffers(std::move(feedback));
++
++  mojo::PendingRemote<mojom::SingleReleaseCallback> callback;
++  mojo::MakeSelfOwnedReceiver(
++      viz::SingleReleaseCallback::Create(base::BindOnce(
++          &SkiaOutputDeviceOffscreen::RunFinishSwapBuffers,
++          weak_ptr_factory_.GetWeakPtr())),
++      callback.InitWithNewPipeAndPassReceiver());
++
++  swap_buffers_callback_.Run(gfx::Size(size_), std::move(callback));
++
+   FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
+-                    gfx::Size(size_.width(), size_.height()), std::move(frame));
++                    gfx::Size(size_), std::move(frame));
+ }
+ 
+ void SkiaOutputDeviceOffscreen::PostSubBuffer(const gfx::Rect& rect,
+@@ -86,49 +110,60 @@ void SkiaOutputDeviceOffscreen::EnsureBackbuffer() {
+   if (size_.IsEmpty())
+     return;
+ 
+-  auto format_index = static_cast<int>(format_);
+-  const auto& sk_color_type = capabilities_.sk_color_types[format_index];
+-  DCHECK(sk_color_type != kUnknown_SkColorType)
+-      << "SkColorType is invalid for format: " << format_index;
+-
+-  if (has_alpha_) {
+-    backend_texture_ = context_state_->gr_context()->createBackendTexture(
+-        size_.width(), size_.height(), sk_color_type, GrMipMapped::kNo,
+-        GrRenderable::kYes);
+-  } else {
+-    is_emulated_rgbx_ = true;
+-    // Initialize alpha channel to opaque.
+-    backend_texture_ = context_state_->gr_context()->createBackendTexture(
+-        size_.width(), size_.height(), sk_color_type, SkColors::kBlack,
+-        GrMipMapped::kNo, GrRenderable::kYes);
++  auto resource_format = GetResourceFormat(format_);
++  auto color_type = ResourceFormatToClosestSkColorType(true, resource_format);
++  auto alpha_type = has_alpha_ ? kPremul_SkAlphaType : kOpaque_SkAlphaType;
++
++  image_ = impl_gpu_->CreateSharedImageRepresentationSkia(
++      resource_format,
++      size_,
++      gfx::ColorSpace(*sk_color_space_),
++      kBottomLeft_GrSurfaceOrigin,
++      alpha_type);
++
++  if (!image_) {
++    DLOG(ERROR) << "Failed to create shared image.";
+   }
+-  DCHECK(backend_texture_.isValid());
+-
+-  DCHECK(!backbuffer_estimated_size_);
+-  if (backend_texture_.backend() == GrBackendApi::kVulkan) {
+-#if BUILDFLAG(ENABLE_VULKAN)
+-    GrVkImageInfo vk_image_info;
+-    bool result = backend_texture_.getVkImageInfo(&vk_image_info);
+-    DCHECK(result);
+-    backbuffer_estimated_size_ = vk_image_info.fAlloc.fSize;
+-#else
+-    DCHECK(false);
+-#endif
+-  } else {
+-    auto info = SkImageInfo::Make(size_.width(), size_.height(),
+-                                  kSurfaceColorType, kUnpremul_SkAlphaType);
+-    size_t estimated_size = info.computeMinByteSize();
+-    backbuffer_estimated_size_ = estimated_size;
++
++  if (did_create_buffer_callback_) {
++    did_create_buffer_callback_.Run(image_->mailbox());
++  }
++
++  auto info = SkImageInfo::Make(size_.width(), size_.height(),
++                                color_type, alpha_type);
++  size_t estimated_size = info.computeMinByteSize();
++  backbuffer_estimated_size_ = estimated_size;
++
++  if (!surface_write_access_) {
++    std::vector<GrBackendSemaphore> begin_semaphores;
++
++    surface_write_access_ = image_->BeginScopedWriteAccess(
++        &begin_semaphores, &end_semaphores_,
++        gpu::SharedImageRepresentation::AllowUnclearedAccess::kYes);
++
++    surface_write_access_->surface()->wait(begin_semaphores.size(),
++                                           begin_semaphores.data());
+   }
+-  memory_type_tracker_->TrackMemAlloc(backbuffer_estimated_size_);
+ }
+ 
+ void SkiaOutputDeviceOffscreen::DiscardBackbuffer() {
+-  if (backend_texture_.isValid()) {
+-    sk_surface_.reset();
+-    DeleteGrBackendTexture(context_state_.get(), &backend_texture_);
+-    backend_texture_ = GrBackendTexture();
+-    memory_type_tracker_->TrackMemFree(backbuffer_estimated_size_);
++  if (image_) {
++    auto* end_state = surface_write_access_->end_state();
++    if (!end_semaphores_.empty() || end_state) {
++      GrFlushInfo flush_info = {
++          .fNumSemaphores = end_semaphores_.size(),
++          .fSignalSemaphores = end_semaphores_.data(),
++      };
++      surface_write_access_->surface()->flush(flush_info, end_state);
++      auto* direct_context = surface_write_access_->surface()
++                                 ->recordingContext()
++                                 ->asDirectContext();
++      DCHECK(direct_context);
++      direct_context->submit();
++    }
++    surface_write_access_.reset();
++    end_semaphores_.clear();
++    image_.reset();
+     backbuffer_estimated_size_ = 0u;
+   }
+ }
+@@ -137,20 +172,19 @@ SkSurface* SkiaOutputDeviceOffscreen::BeginPaint(
+     bool allocate_frame_buffer,
+     std::vector<GrBackendSemaphore>* end_semaphores) {
+   DCHECK(!allocate_frame_buffer);
+-  DCHECK(backend_texture_.isValid());
+-  if (!sk_surface_) {
+-    SkSurfaceProps surface_props{0, kUnknown_SkPixelGeometry};
+-    sk_surface_ = SkSurface::MakeFromBackendTexture(
+-        context_state_->gr_context(), backend_texture_,
+-        capabilities_.output_surface_origin == gfx::SurfaceOrigin::kTopLeft
+-            ? kTopLeft_GrSurfaceOrigin
+-            : kBottomLeft_GrSurfaceOrigin,
+-        0 /* sampleCount */, kSurfaceColorType, sk_color_space_,
+-        &surface_props);
+-  }
+-  return sk_surface_.get();
++  DCHECK(image_);
++
++  end_semaphores->swap(end_semaphores_);
++
++  return surface_write_access_->surface();
+ }
+ 
+ void SkiaOutputDeviceOffscreen::EndPaint() {}
+ 
++void SkiaOutputDeviceOffscreen::RunFinishSwapBuffers(
++    const gpu::SyncToken& sync_token,
++    bool is_lost) {
++  // TODO: make this work
++}
++
+ }  // namespace viz
+diff --git a/components/viz/service/display_embedder/skia_output_device_offscreen.h b/components/viz/service/display_embedder/skia_output_device_offscreen.h
+index e983d90c8001513fa4cdf66ca0fb98a22f08883c..90fcaaf506cef451f058f2e14434e3b7a1003e12 100644
+--- a/components/viz/service/display_embedder/skia_output_device_offscreen.h
++++ b/components/viz/service/display_embedder/skia_output_device_offscreen.h
+@@ -8,7 +8,9 @@
+ #include <vector>
+ 
+ #include "components/viz/service/display_embedder/skia_output_device.h"
++#include "components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h"
+ #include "gpu/command_buffer/service/shared_context_state.h"
++#include "gpu/command_buffer/service/shared_image_representation.h"
+ #include "third_party/skia/include/core/SkColorSpace.h"
+ #include "third_party/skia/include/core/SkImageInfo.h"
+ 
+@@ -18,6 +20,7 @@ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
+  public:
+   SkiaOutputDeviceOffscreen(
+       scoped_refptr<gpu::SharedContextState> context_state,
++      scoped_refptr<viz::SkiaOutputSurfaceImplOnGpu> impl_gpu,
+       gfx::SurfaceOrigin origin,
+       bool has_alpha,
+       gpu::MemoryTracker* memory_tracker,
+@@ -29,6 +32,8 @@ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
+ 
+   ~SkiaOutputDeviceOffscreen() override;
+ 
++  const gfx::Size size() override;
++
+   // SkiaOutputDevice implementation:
+   bool Reshape(const gfx::Size& size,
+                float device_scale_factor,
+@@ -48,17 +53,27 @@ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
+   void EndPaint() override;
+ 
+  protected:
++  void RunFinishSwapBuffers(const gpu::SyncToken& sync_token,
++                            bool is_lost);
++
+   scoped_refptr<gpu::SharedContextState> context_state_;
++  scoped_refptr<viz::SkiaOutputSurfaceImplOnGpu> impl_gpu_;
++  std::unique_ptr<gpu::SharedImageRepresentationSkia> image_;
++  std::unique_ptr<gpu::SharedImageRepresentationSkia::ScopedWriteAccess>
++    surface_write_access_;
+   const bool has_alpha_;
+-  sk_sp<SkSurface> sk_surface_;
+-  GrBackendTexture backend_texture_;
+   bool supports_rgbx_ = true;
+   gfx::Size size_;
+   gfx::BufferFormat format_ = gfx::BufferFormat::RGBA_8888;
+   sk_sp<SkColorSpace> sk_color_space_;
++  std::vector<GrBackendSemaphore> end_semaphores_;
++
++  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+ 
+  private:
+   uint64_t backbuffer_estimated_size_ = 0;
++
++  base::WeakPtrFactory<SkiaOutputDeviceOffscreen> weak_ptr_factory_{this};
+ };
+ 
+ }  // namespace viz
+diff --git a/components/viz/service/display_embedder/skia_output_surface_impl.cc b/components/viz/service/display_embedder/skia_output_surface_impl.cc
+index a07f5e4f9f3a79545d26fee9c41d4ef04f9b60e0..372231c9384b79ea7530fb52572e12fa822bc6bf 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_impl.cc
++++ b/components/viz/service/display_embedder/skia_output_surface_impl.cc
+@@ -34,6 +34,7 @@
+ #include "gpu/command_buffer/service/shared_image_representation.h"
+ #include "gpu/command_buffer/service/skia_utils.h"
+ #include "gpu/ipc/service/context_url.h"
++#include "gpu/ipc/scheduler_sequence.h"
+ #include "gpu/ipc/single_task_sequence.h"
+ #include "gpu/vulkan/buildflags.h"
+ #include "skia/buildflags.h"
+@@ -159,13 +160,14 @@ gfx::Rect SkiaOutputSurfaceImpl::FrameBufferDamageTracker::
+ std::unique_ptr<SkiaOutputSurface> SkiaOutputSurfaceImpl::Create(
+     DisplayCompositorMemoryAndTaskController* display_controller,
+     const RendererSettings& renderer_settings,
+-    const DebugRendererSettings* debug_settings) {
++    const DebugRendererSettings* debug_settings,
++    mojom::DisplayClient* display_client) {
+   DCHECK(display_controller);
+   DCHECK(display_controller->skia_dependency());
+   DCHECK(display_controller->gpu_task_scheduler());
+   auto output_surface = std::make_unique<SkiaOutputSurfaceImpl>(
+       base::PassKey<SkiaOutputSurfaceImpl>(), display_controller,
+-      renderer_settings, debug_settings);
++      renderer_settings, debug_settings, std::move(display_client));
+   if (!output_surface->Initialize())
+     output_surface = nullptr;
+   return output_surface;
+@@ -175,7 +177,8 @@ SkiaOutputSurfaceImpl::SkiaOutputSurfaceImpl(
+     base::PassKey<SkiaOutputSurfaceImpl> /* pass_key */,
+     DisplayCompositorMemoryAndTaskController* display_controller,
+     const RendererSettings& renderer_settings,
+-    const DebugRendererSettings* debug_settings)
++    const DebugRendererSettings* debug_settings,
++    mojom::DisplayClient* display_client)
+     : SkiaOutputSurface(
+           GetOutputSurfaceType(display_controller->skia_dependency())),
+       dependency_(display_controller->skia_dependency()),
+@@ -183,7 +186,8 @@ SkiaOutputSurfaceImpl::SkiaOutputSurfaceImpl(
+       debug_settings_(debug_settings),
+       display_compositor_controller_(display_controller),
+       gpu_task_scheduler_(
+-          display_compositor_controller_->gpu_task_scheduler()) {
++          display_compositor_controller_->gpu_task_scheduler()),
++      display_client_(display_client) {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   if (features::IsUsingRawDraw()) {
+     auto* manager = dependency_->GetSharedImageManager();
+@@ -210,7 +214,7 @@ SkiaOutputSurfaceImpl::~SkiaOutputSurfaceImpl() {
+ 
+   // Post a task to destroy |impl_on_gpu_| on the GPU thread.
+   auto task = base::BindOnce(
+-      [](std::unique_ptr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu) {},
++      [](raw_ptr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu) {},
+       std::move(impl_on_gpu_));
+   EnqueueGpuTask(std::move(task), {}, /*make_current=*/false,
+                  /*need_framebuffer=*/false);
+@@ -647,6 +651,7 @@ SkiaOutputSurfaceImpl::EndPaintRenderPassOverlay() {
+ #endif  // BUILDFLAG(IS_APPLE) || defined(USE_OZONE)
+ 
+ void SkiaOutputSurfaceImpl::EndPaint(base::OnceClosure on_finished) {
++  // LOG(INFO) << "EndPaint";
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   DCHECK(current_paint_);
+   // If current_render_pass_id_ is not null, we are painting a render pass.
+@@ -902,6 +907,10 @@ void SkiaOutputSurfaceImpl::InitializeOnGpuThread(
+       &SkiaOutputSurfaceImpl::DidSwapBuffersComplete, weak_ptr_);
+   auto buffer_presented_callback =
+       base::BindRepeating(&SkiaOutputSurfaceImpl::BufferPresented, weak_ptr_);
++  auto buffer_created_callback =
++      base::BindRepeating(&SkiaOutputSurfaceImpl::BufferCreated, weak_ptr_);
++  auto swap_buffers_callback =
++      base::BindRepeating(&SkiaOutputSurfaceImpl::OnSwapBuffers, weak_ptr_);
+   auto context_lost_callback =
+       base::BindOnce(&SkiaOutputSurfaceImpl::ContextLost, weak_ptr_);
+ 
+@@ -909,7 +918,10 @@ void SkiaOutputSurfaceImpl::InitializeOnGpuThread(
+       dependency_, renderer_settings_, gpu_task_scheduler_->GetSequenceId(),
+       display_compositor_controller_->controller_on_gpu(),
+       std::move(did_swap_buffer_complete_callback),
+-      std::move(buffer_presented_callback), std::move(context_lost_callback),
++      std::move(buffer_presented_callback),
++      std::move(buffer_created_callback),
++      std::move(swap_buffers_callback),
++      std::move(context_lost_callback),
+       std::move(vsync_callback_runner));
+   if (!impl_on_gpu_) {
+     *result = false;
+@@ -1052,6 +1064,17 @@ void SkiaOutputSurfaceImpl::BufferPresented(
+   }
+ }
+ 
++void SkiaOutputSurfaceImpl::BufferCreated(const gpu::Mailbox& mailbox) {
++  display_client_->BackingTextureCreated(mailbox);
++}
++
++void SkiaOutputSurfaceImpl::OnSwapBuffers(
++    const gfx::Size& size,
++    mojo::PendingRemote<viz::mojom::SingleReleaseCallback> callback) {
++  gpu::ScopedAllowScheduleGpuTask allow_gpu;
++  display_client_->OnSwapBuffers(size, Flush(), std::move(callback));
++}
++
+ void SkiaOutputSurfaceImpl::OnGpuVSync(base::TimeTicks timebase,
+                                        base::TimeDelta interval) {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+@@ -1101,7 +1124,8 @@ void SkiaOutputSurfaceImpl::FlushGpuTasks(SyncMode sync_mode) {
+ 
+   auto callback = base::BindOnce(
+       [](std::vector<GpuTask> tasks, SyncMode sync_mode,
+-         base::WaitableEvent* event, SkiaOutputSurfaceImplOnGpu* impl_on_gpu,
++         base::WaitableEvent* event,
++         raw_ptr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu,
+          bool make_current, bool need_framebuffer,
+          base::TimeTicks post_task_timestamp) {
+         if (sync_mode == SyncMode::kWaitForTasksStarted)
+@@ -1125,7 +1149,7 @@ void SkiaOutputSurfaceImpl::FlushGpuTasks(SyncMode sync_mode) {
+         if (sync_mode == SyncMode::kWaitForTasksFinished)
+           event->Signal();
+       },
+-      std::move(gpu_tasks_), sync_mode, event.get(), impl_on_gpu_.get(),
++      std::move(gpu_tasks_), sync_mode, event.get(), impl_on_gpu_,
+       make_current_, need_framebuffer_, post_task_timestamp);
+ 
+   gpu::GpuTaskSchedulerHelper::ReportingCallback reporting_callback;
+diff --git a/components/viz/service/display_embedder/skia_output_surface_impl.h b/components/viz/service/display_embedder/skia_output_surface_impl.h
+index d55985b4f99df3b0e6bc855316257ba4a84a6dfa..e4abef80182de5991d3553b5be25b1bf744e3b7d 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_impl.h
++++ b/components/viz/service/display_embedder/skia_output_surface_impl.h
+@@ -25,6 +25,8 @@
+ #include "gpu/ipc/common/vulkan_ycbcr_info.h"
+ #include "gpu/ipc/in_process_command_buffer.h"
+ #include "mojo/public/cpp/bindings/pending_receiver.h"
++#include "mojo/public/cpp/bindings/remote.h"
++#include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
+ #include "third_party/abseil-cpp/absl/types/optional.h"
+ #include "third_party/skia/include/core/SkDeferredDisplayListRecorder.h"
+ #include "third_party/skia/include/core/SkOverdrawCanvas.h"
+@@ -61,13 +63,15 @@ class VIZ_SERVICE_EXPORT SkiaOutputSurfaceImpl : public SkiaOutputSurface {
+   static std::unique_ptr<SkiaOutputSurface> Create(
+       DisplayCompositorMemoryAndTaskController* display_controller,
+       const RendererSettings& renderer_settings,
+-      const DebugRendererSettings* debug_settings);
++      const DebugRendererSettings* debug_settings,
++      mojom::DisplayClient* display_client);
+ 
+   SkiaOutputSurfaceImpl(
+       base::PassKey<SkiaOutputSurfaceImpl> pass_key,
+       DisplayCompositorMemoryAndTaskController* display_controller,
+       const RendererSettings& renderer_settings,
+-      const DebugRendererSettings* debug_settings);
++      const DebugRendererSettings* debug_settings,
++      mojom::DisplayClient* display_client);
+   ~SkiaOutputSurfaceImpl() override;
+ 
+   SkiaOutputSurfaceImpl(const SkiaOutputSurfaceImpl&) = delete;
+@@ -201,6 +205,10 @@ class VIZ_SERVICE_EXPORT SkiaOutputSurfaceImpl : public SkiaOutputSurface {
+                               const gfx::Size& pixel_size,
+                               gfx::GpuFenceHandle release_fence);
+   void BufferPresented(const gfx::PresentationFeedback& feedback);
++  void BufferCreated(const gpu::Mailbox& mailbox);
++  void OnSwapBuffers(
++      const gfx::Size& size,
++      mojo::PendingRemote<viz::mojom::SingleReleaseCallback> callback);
+ 
+   // Provided as a callback for the GPU thread.
+   void OnGpuVSync(base::TimeTicks timebase, base::TimeDelta interval);
+@@ -356,7 +364,9 @@ class VIZ_SERVICE_EXPORT SkiaOutputSurfaceImpl : public SkiaOutputSurface {
+   // from SkiaOutputSurfaceImpl::Initialize and SkiaOutputSurfaceImpl::dtor. So
+   // it's safe to use base::Unretained for posting tasks during life time of
+   // SkiaOutputSurfaceImpl.
+-  std::unique_ptr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu_;
++  raw_ptr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu_;
++
++  mojom::DisplayClient* display_client_;
+ 
+   sk_sp<GrContextThreadSafeProxy> gr_context_thread_safe_;
+ 
+diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+index eb35a45820e11f98de254431ee9bc694eef8cfea..2808cd5201d35993d168d8f8bcd9b48c670918e0 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
++++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+@@ -59,6 +59,7 @@
+ #include "ui/gfx/geometry/rect_conversions.h"
+ #include "ui/gfx/gpu_fence_handle.h"
+ #include "ui/gl/gl_surface.h"
++#include "ui/gl/init/gl_factory.h"
+ 
+ #if BUILDFLAG(ENABLE_VULKAN)
+ #include "components/viz/service/display_embedder/skia_output_device_vulkan.h"
+@@ -109,6 +110,19 @@ void PostAsyncTaskRepeatedly(
+     impl_on_gpu->PostTaskToClientThread(base::BindOnce(callback, args...));
+ }
+ 
++template <>
++void PostAsyncTaskRepeatedly(
++    base::WeakPtr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu,
++    const SwapBuffersCallback& callback,
++    const gfx::Size& size,
++    SingleReleaseCallbackRemote release_callback) {
++  // Callbacks generated by this function may be executed asynchronously
++  // (e.g. by presentation feedback) after |impl_on_gpu| has been destroyed.
++  if (impl_on_gpu)
++    impl_on_gpu->PostTaskToClientThread(
++        base::BindOnce(callback, size, std::move(release_callback)));
++}
++
+ template <typename... Args>
+ base::RepeatingCallback<void(Args...)> CreateSafeRepeatingCallback(
+     base::WeakPtr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu,
+@@ -236,13 +250,15 @@ class SkiaOutputSurfaceImplOnGpu::DisplayContext : public gpu::DisplayContext {
+ };
+ 
+ // static
+-std::unique_ptr<SkiaOutputSurfaceImplOnGpu> SkiaOutputSurfaceImplOnGpu::Create(
++raw_ptr<SkiaOutputSurfaceImplOnGpu> SkiaOutputSurfaceImplOnGpu::Create(
+     SkiaOutputSurfaceDependency* deps,
+     const RendererSettings& renderer_settings,
+     const gpu::SequenceId sequence_id,
+     gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps,
+     DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
+     BufferPresentedCallback buffer_presented_callback,
++    BufferCreatedCallback buffer_created_callback,
++    SwapBuffersCallback swap_buffers_callback,
+     ContextLostCallback context_lost_callback,
+     GpuVSyncCallback gpu_vsync_callback) {
+   TRACE_EVENT0("viz", "SkiaOutputSurfaceImplOnGpu::Create");
+@@ -261,12 +277,20 @@ std::unique_ptr<SkiaOutputSurfaceImplOnGpu> SkiaOutputSurfaceImplOnGpu::Create(
+   }
+   context_state->set_need_context_state_reset(true);
+ 
+-  auto impl_on_gpu = std::make_unique<SkiaOutputSurfaceImplOnGpu>(
+-      base::PassKey<SkiaOutputSurfaceImplOnGpu>(), deps,
+-      context_state->feature_info(), renderer_settings, sequence_id,
+-      shared_gpu_deps, std::move(did_swap_buffer_complete_callback),
+-      std::move(buffer_presented_callback), std::move(context_lost_callback),
+-      std::move(gpu_vsync_callback));
++  raw_ptr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu =
++      new SkiaOutputSurfaceImplOnGpu(
++          base::PassKey<SkiaOutputSurfaceImplOnGpu>(),
++          deps,
++          context_state->feature_info(),
++          renderer_settings,
++          sequence_id,
++          shared_gpu_deps,
++          std::move(did_swap_buffer_complete_callback),
++          std::move(buffer_presented_callback),
++          std::move(buffer_created_callback),
++          std::move(swap_buffers_callback),
++          std::move(context_lost_callback),
++          std::move(gpu_vsync_callback));
+   if (!impl_on_gpu->Initialize())
+     return nullptr;
+ 
+@@ -282,6 +306,8 @@ SkiaOutputSurfaceImplOnGpu::SkiaOutputSurfaceImplOnGpu(
+     gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps,
+     DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
+     BufferPresentedCallback buffer_presented_callback,
++    BufferCreatedCallback buffer_created_callback,
++    SwapBuffersCallback swap_buffers_callback,
+     ContextLostCallback context_lost_callback,
+     GpuVSyncCallback gpu_vsync_callback)
+     : dependency_(std::move(deps)),
+@@ -313,6 +339,10 @@ SkiaOutputSurfaceImplOnGpu::SkiaOutputSurfaceImplOnGpu(
+   weak_ptr_ = weak_ptr_factory_.GetWeakPtr();
+   buffer_presented_callback_ = CreateSafeRepeatingCallback(
+       weak_ptr_, std::move(buffer_presented_callback));
++  buffer_created_callback_ = CreateSafeRepeatingCallback(
++      weak_ptr_, std::move(buffer_created_callback));
++  swap_buffers_callback_ = CreateSafeRepeatingCallback(
++      weak_ptr_, std::move(swap_buffers_callback));
+ }
+ 
+ void SkiaOutputSurfaceImplOnGpu::ReleaseAsyncReadResultHelpers() {
+@@ -608,7 +638,9 @@ std::unique_ptr<gpu::SharedImageRepresentationSkia>
+ SkiaOutputSurfaceImplOnGpu::CreateSharedImageRepresentationSkia(
+     ResourceFormat resource_format,
+     const gfx::Size& size,
+-    const gfx::ColorSpace& color_space) {
++    const gfx::ColorSpace& color_space,
++    GrSurfaceOrigin origin,
++    SkAlphaType alpha_type) {
+   constexpr uint32_t kUsage = gpu::SHARED_IMAGE_USAGE_GLES2 |
+                               gpu::SHARED_IMAGE_USAGE_GLES2_FRAMEBUFFER_HINT |
+                               gpu::SHARED_IMAGE_USAGE_RASTER |
+@@ -616,8 +648,8 @@ SkiaOutputSurfaceImplOnGpu::CreateSharedImageRepresentationSkia(
+ 
+   gpu::Mailbox mailbox = gpu::Mailbox::GenerateForSharedImage();
+   bool result = shared_image_factory_->CreateSharedImage(
+-      mailbox, resource_format, size, color_space, kBottomLeft_GrSurfaceOrigin,
+-      kUnpremul_SkAlphaType, gpu::kNullSurfaceHandle, kUsage);
++      mailbox, resource_format, size, color_space, origin,
++      alpha_type, gpu::kNullSurfaceHandle, kUsage);
+   if (!result) {
+     DLOG(ERROR) << "Failed to create shared image.";
+     return nullptr;
+@@ -1448,9 +1480,13 @@ void SkiaOutputSurfaceImplOnGpu::SetCapabilitiesForTesting(
+   // Check that we're using an offscreen surface.
+   DCHECK(dependency_->IsOffscreen());
+   output_device_ = std::make_unique<SkiaOutputDeviceOffscreen>(
+-      context_state_, capabilities.output_surface_origin,
++      context_state_, base::WrapRefCounted(this),
++      capabilities.output_surface_origin,
+       renderer_settings_.requires_alpha_channel,
+-      shared_gpu_deps_->memory_tracker(), GetDidSwapBuffersCompleteCallback());
++      shared_gpu_deps_->memory_tracker(),
++      GetDidSwapBuffersCompleteCallback());
++  output_device_->SetBufferCreationCallback(buffer_created_callback_);
++  output_device_->SetSwapBuffersCallback(swap_buffers_callback_);
+ }
+ 
+ bool SkiaOutputSurfaceImplOnGpu::Initialize() {
+@@ -1505,10 +1541,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForGL() {
+       return false;
+ 
+     output_device_ = std::make_unique<SkiaOutputDeviceOffscreen>(
+-        context_state_, gfx::SurfaceOrigin::kTopLeft,
++        context_state_,
++        base::WrapRefCounted(this),
++        gfx::SurfaceOrigin::kBottomLeft,
+         renderer_settings_.requires_alpha_channel,
+         shared_gpu_deps_->memory_tracker(),
+         GetDidSwapBuffersCompleteCallback());
++    output_device_->SetBufferCreationCallback(buffer_created_callback_);
++    output_device_->SetSwapBuffersCallback(swap_buffers_callback_);
+   } else {
+     gl_surface_ =
+         dependency_->CreateGLSurface(weak_ptr_factory_.GetWeakPtr(), format);
+@@ -1573,10 +1613,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForGL() {
+ bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
+   if (dependency_->IsOffscreen()) {
+     output_device_ = std::make_unique<SkiaOutputDeviceOffscreen>(
+-        context_state_, gfx::SurfaceOrigin::kBottomLeft,
++        context_state_,
++        base::WrapRefCounted(this),
++        gfx::SurfaceOrigin::kBottomLeft,
+         renderer_settings_.requires_alpha_channel,
+         shared_gpu_deps_->memory_tracker(),
+         GetDidSwapBuffersCompleteCallback());
++    output_device_->SetBufferCreationCallback(buffer_created_callback_);
++    output_device_->SetSwapBuffersCallback(swap_buffers_callback_);
+     return true;
+   }
+ 
+@@ -1671,10 +1715,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForDawn() {
+ #if BUILDFLAG(SKIA_USE_DAWN)
+   if (dependency_->IsOffscreen()) {
+     output_device_ = std::make_unique<SkiaOutputDeviceOffscreen>(
+-        context_state_, gfx::SurfaceOrigin::kBottomLeft,
++        context_state_,
++        base::WrapRefCounted(this),
++        gfx::SurfaceOrigin::kBottomLeft,
+         renderer_settings_.requires_alpha_channel,
+         shared_gpu_deps_->memory_tracker(),
+         GetDidSwapBuffersCompleteCallback());
++    output_device_->SetBufferCreationCallback(buffer_created_callback_);
++    output_device_->SetSwapBuffersCallback(swap_buffers_callback_);
+   } else {
+ #if defined(USE_OZONE_PLATFORM_X11)
+     // TODO(rivr): Set up a Vulkan swapchain so that Linux can also use
+@@ -2092,6 +2140,11 @@ void SkiaOutputSurfaceImplOnGpu::RemoveAsyncReadResultHelperWithLock(
+   async_read_result_helpers_.erase(helper);
+ }
+ 
++scoped_refptr<gpu::SyncPointClientState>
++SkiaOutputSurfaceImplOnGpu::GetSyncPointClientState() {
++  return sync_point_client_state_;
++}
++
+ void SkiaOutputSurfaceImplOnGpu::EnsureBackbuffer() {
+   // We call GLSurface::SetBackbuffferAllocation in Ensure/Discard backbuffer,
+   // so technically need framebuffer. In reality no GLSurface implements it, but
+diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h
+index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..7e1bb6ac6468f1c371869df955ebf39cfbb8408f 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h
++++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h
+@@ -12,6 +12,8 @@
+ 
+ #include "base/containers/span.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/memory/ref_counted.h"
++#include "base/memory/scoped_refptr.h"
+ #include "base/threading/thread_checker.h"
+ #include "base/types/id_type.h"
+ #include "base/types/pass_key.h"
+@@ -77,10 +79,19 @@ namespace copy_output {
+ struct RenderPassGeometry;
+ }  // namespace copy_output
+ 
++using SingleReleaseCallbackRemote =
++    mojo::PendingRemote<viz::mojom::SingleReleaseCallback>;
++using SwapBuffersCallback =
++    base::RepeatingCallback<void(
++        const gfx::Size& size, SingleReleaseCallbackRemote callback)>;
++using BufferCreatedCallback =
++    base::RepeatingCallback<void(const gpu::Mailbox& mailbox)>;
++
+ // The SkiaOutputSurface implementation running on the GPU thread. This class
+ // should be created, used and destroyed on the GPU thread.
+ class SkiaOutputSurfaceImplOnGpu
+     : public gpu::ImageTransportSurfaceDelegate,
++      public base::RefCounted<SkiaOutputSurfaceImplOnGpu>,
+       public gpu::SharedContextState::ContextLostObserver {
+  public:
+   using DidSwapBufferCompleteCallback =
+@@ -93,13 +104,15 @@ class SkiaOutputSurfaceImplOnGpu
+ 
+   // |gpu_vsync_callback| must be safe to call on any thread. The other
+   // callbacks will only be called via |deps->PostTaskToClientThread|.
+-  static std::unique_ptr<SkiaOutputSurfaceImplOnGpu> Create(
++  static raw_ptr<SkiaOutputSurfaceImplOnGpu> Create(
+       SkiaOutputSurfaceDependency* deps,
+       const RendererSettings& renderer_settings,
+       const gpu::SequenceId sequence_id,
+       gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps,
+       DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
+       BufferPresentedCallback buffer_presented_callback,
++      BufferCreatedCallback buffer_created_callback,
++      SwapBuffersCallback swap_buffers_callback,
+       ContextLostCallback context_lost_callback,
+       GpuVSyncCallback gpu_vsync_callback);
+ 
+@@ -112,15 +125,18 @@ class SkiaOutputSurfaceImplOnGpu
+       gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps,
+       DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
+       BufferPresentedCallback buffer_presented_callback,
++      BufferCreatedCallback buffer_created_callback,
++      SwapBuffersCallback swap_buffers_callback,
+       ContextLostCallback context_lost_callback,
+       GpuVSyncCallback gpu_vsync_callback);
+ 
+   SkiaOutputSurfaceImplOnGpu(const SkiaOutputSurfaceImplOnGpu&) = delete;
+   SkiaOutputSurfaceImplOnGpu& operator=(const SkiaOutputSurfaceImplOnGpu&) =
+       delete;
+-
++private:
++  friend class base::RefCounted<SkiaOutputSurfaceImplOnGpu>;
+   ~SkiaOutputSurfaceImplOnGpu() override;
+-
++public:
+   gpu::CommandBufferId command_buffer_id() const {
+     return shared_gpu_deps_->command_buffer_id();
+   }
+@@ -247,6 +263,8 @@ class SkiaOutputSurfaceImplOnGpu
+   void AddAsyncReadResultHelperWithLock(AsyncReadResultHelper* helper);
+   void RemoveAsyncReadResultHelperWithLock(AsyncReadResultHelper* helper);
+ 
++  scoped_refptr<gpu::SyncPointClientState> GetSyncPointClientState();
++
+  private:
+   class DisplayContext;
+ 
+@@ -329,13 +347,16 @@ class SkiaOutputSurfaceImplOnGpu
+                       SkSurface::RescaleMode rescale_mode,
+                       bool is_downscale_or_identity_in_both_dimensions,
+                       std::unique_ptr<CopyOutputRequest> request);
+-
++public:
+   // Helper for `CopyOutputNV12()` & `CopyOutputRGBA()` methods:
+   std::unique_ptr<gpu::SharedImageRepresentationSkia>
+-  CreateSharedImageRepresentationSkia(ResourceFormat resource_format,
+-                                      const gfx::Size& size,
+-                                      const gfx::ColorSpace& color_space);
+-
++  CreateSharedImageRepresentationSkia(
++      ResourceFormat resource_format,
++      const gfx::Size& size,
++      const gfx::ColorSpace& color_space,
++      GrSurfaceOrigin origin = kBottomLeft_GrSurfaceOrigin,
++      SkAlphaType alpha_type = kUnpremul_SkAlphaType);
++private:
+   // Helper for `CopyOutputNV12()` & `CopyOutputRGBA()` methods, renders
+   // |surface| into |dest_surface|'s canvas, cropping and scaling the results
+   // appropriately. |source_selection| is the area of the |surface| that will be
+@@ -415,6 +436,8 @@ class SkiaOutputSurfaceImplOnGpu
+   // Should only be run on the client thread with PostTaskToClientThread().
+   DidSwapBufferCompleteCallback did_swap_buffer_complete_callback_;
+   BufferPresentedCallback buffer_presented_callback_;
++  BufferCreatedCallback buffer_created_callback_;
++  SwapBuffersCallback swap_buffers_callback_;
+   ContextLostCallback context_lost_callback_;
+   GpuVSyncCallback gpu_vsync_callback_;
+ 
+diff --git a/components/viz/service/frame_sinks/external_begin_frame_source_mojo.cc b/components/viz/service/frame_sinks/external_begin_frame_source_mojo.cc
+index 9ce1f5a11b28c75c8c89686c5253d8659d1267ec..9c6042b40439f213ca9b26e75149803643a442e6 100644
+--- a/components/viz/service/frame_sinks/external_begin_frame_source_mojo.cc
++++ b/components/viz/service/frame_sinks/external_begin_frame_source_mojo.cc
+@@ -31,7 +31,7 @@ void ExternalBeginFrameSourceMojo::IssueExternalBeginFrame(
+     bool force,
+     base::OnceCallback<void(const BeginFrameAck&)> callback) {
+   DCHECK(!pending_frame_callback_) << "Got overlapping IssueExternalBeginFrame";
+-  DCHECK(pending_frame_sinks_.empty());
++  // DCHECK(pending_frame_sinks_.empty());
+   original_source_id_ = args.frame_id.source_id;
+ 
+   OnBeginFrame(args);
+@@ -138,4 +138,29 @@ void ExternalBeginFrameSourceMojo::SetDisplay(Display* display) {
+     display_->AddObserver(this);
+ }
+ 
++ControllableBeginFrameSource::ControllableBeginFrameSource(
++    std::unique_ptr<DelayBasedTimeSource> time_source,
++    mojo::PendingAssociatedReceiver<mojom::BeginFrameControllerMojo>
++        controller_receiver,
++    uint32_t restart_id)
++    : DelayBasedBeginFrameSource(std::move(time_source), restart_id),
++      receiver_(this, std::move(controller_receiver)) {}
++
++ControllableBeginFrameSource::~ControllableBeginFrameSource() {}
++
++void ControllableBeginFrameSource::IssueBeginFrame() {
++  if (RequestCallbackOnGpuAvailable())
++    return;
++
++  last_begin_frame_args_ = CreateBeginFrameArgs(base::TimeTicks::Now());
++
++  base::flat_set<BeginFrameObserver*> observers(observers_);
++  for (auto* obs : observers)
++    IssueBeginFrameToObserver(obs, last_begin_frame_args_);
++}
++
++void ControllableBeginFrameSource::EnableBeginFrames(bool enable) {
++  SetActive(enable);
++}
++
+ }  // namespace viz
+diff --git a/components/viz/service/frame_sinks/external_begin_frame_source_mojo.h b/components/viz/service/frame_sinks/external_begin_frame_source_mojo.h
+index ce01240c3be8881c6501762f37e72b55ff639c3e..3a1b8980c9c73d0b7d2bd6ea15f67a827f157acf 100644
+--- a/components/viz/service/frame_sinks/external_begin_frame_source_mojo.h
++++ b/components/viz/service/frame_sinks/external_begin_frame_source_mojo.h
+@@ -94,6 +94,31 @@ class VIZ_SERVICE_EXPORT ExternalBeginFrameSourceMojo
+   raw_ptr<Display> display_ = nullptr;
+ };
+ 
++class VIZ_SERVICE_EXPORT ControllableBeginFrameSource
++    : public DelayBasedBeginFrameSource,
++      public mojom::BeginFrameControllerMojo {
++ public:
++  ControllableBeginFrameSource(
++      std::unique_ptr<DelayBasedTimeSource> time_source,
++      mojo::PendingAssociatedReceiver<mojom::BeginFrameControllerMojo>
++          controller_receiver,
++      uint32_t restart_id);
++
++  ControllableBeginFrameSource(const ControllableBeginFrameSource&) = delete;
++  ControllableBeginFrameSource& operator=(const ControllableBeginFrameSource&) =
++      delete;
++
++  ~ControllableBeginFrameSource() override;
++
++  // mojom::BeginFrameControllerMojo
++  void IssueBeginFrame() override;
++  void EnableBeginFrames(bool enable) override;
++
++ private:
++
++  mojo::AssociatedReceiver<mojom::BeginFrameControllerMojo> receiver_;
++};
++
+ }  // namespace viz
+ 
+ #endif  // COMPONENTS_VIZ_SERVICE_FRAME_SINKS_EXTERNAL_BEGIN_FRAME_SOURCE_MOJO_H_
+diff --git a/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc b/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc
+index e2f4350edeae766916716345327d0bbefb561e4c..68c5e40cd71dcff9ed60e2566fc8ecaaf1b6204a 100644
+--- a/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc
++++ b/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc
+@@ -25,6 +25,7 @@
+ #include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+ #include "components/viz/service/frame_sinks/gpu_vsync_begin_frame_source.h"
+ #include "components/viz/service/hit_test/hit_test_aggregator.h"
++#include "mojo/public/cpp/bindings/sync_call_restrictions.h"
+ 
+ #if BUILDFLAG(IS_ANDROID)
+ #include "components/viz/service/frame_sinks/external_begin_frame_source_android.h"
+@@ -80,10 +81,19 @@ RootCompositorFrameSinkImpl::Create(
+   // First create an output surface.
+   mojo::Remote<mojom::DisplayClient> display_client(
+       std::move(params->display_client));
++
++  bool isOffscreen = false;
++  {
++    mojo::SyncCallRestrictions::ScopedAllowSyncCall scoped_allow;
++    display_client->IsOffscreen(&isOffscreen);
++  }
++  gpu::SurfaceHandle surface =
++      isOffscreen ? gpu::kNullSurfaceHandle : params->widget;
++
+   auto display_controller = output_surface_provider->CreateGpuDependency(
+-      params->gpu_compositing, params->widget, params->renderer_settings);
++      params->gpu_compositing, surface, params->renderer_settings);
+   auto output_surface = output_surface_provider->CreateOutputSurface(
+-      params->widget, params->gpu_compositing, display_client.get(),
++      surface, params->gpu_compositing, display_client.get(),
+       display_controller.get(), params->renderer_settings, debug_settings,
+       params->offscreen);
+ 
+@@ -114,7 +124,14 @@ RootCompositorFrameSinkImpl::Create(
+   bool wants_vsync_updates = false;
+ #endif
+ 
+-  if (params->external_begin_frame_controller) {
++  if (params->begin_frame_controller_mojo) {
++    synthetic_begin_frame_source =
++        std::make_unique<ControllableBeginFrameSource>(
++            std::make_unique<DelayBasedTimeSource>(
++                base::ThreadTaskRunnerHandle::Get().get()),
++            std::move(params->begin_frame_controller_mojo),
++            restart_id);
++  } else if (params->external_begin_frame_controller) {
+     auto owned_external_begin_frame_source_mojo =
+         std::make_unique<ExternalBeginFrameSourceMojo>(
+             frame_sink_manager,
+diff --git a/content/browser/browser_main_loop.cc b/content/browser/browser_main_loop.cc
+index 17ec64e26e9c9352a58819a08e628bdfe49178df..18b7634d0ae8cc515276e7ffbacd2aa061fa0099 100644
+--- a/content/browser/browser_main_loop.cc
++++ b/content/browser/browser_main_loop.cc
+@@ -449,7 +449,7 @@ void BrowserMainLoop::EnableStartupTasks(bool enabled) {
+ // BrowserMainLoop construction / destruction =============================
+ 
+ BrowserMainLoop* BrowserMainLoop::GetInstance() {
+-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  // DCHECK_CURRENTLY_ON(BrowserThread::UI);
+   return g_current_browser_main_loop;
+ }
+ 
+diff --git a/content/browser/compositor/viz_process_transport_factory.cc b/content/browser/compositor/viz_process_transport_factory.cc
+index 7fe490e55a4bb8a183d0d241188ea15a44347245..95e52602af818d374ffe91ad94c84478a2d6a521 100644
+--- a/content/browser/compositor/viz_process_transport_factory.cc
++++ b/content/browser/compositor/viz_process_transport_factory.cc
+@@ -398,6 +398,12 @@ void VizProcessTransportFactory::OnEstablishedGpuChannel(
+             .BindNewEndpointAndPassReceiver();
+   }
+ 
++  if (compositor->enable_manual_begin_frame_control()) {
++    root_params->begin_frame_controller_mojo =
++        compositor_data.begin_frame_controller_mojo
++            .BindNewEndpointAndPassReceiver();
++  }
++
+   root_params->frame_sink_id = compositor->frame_sink_id();
+ #if defined(GPU_SURFACE_HANDLE_IS_ACCELERATED_WINDOW)
+   root_params->widget = compositor->widget();
+@@ -441,6 +447,11 @@ void VizProcessTransportFactory::OnEstablishedGpuChannel(
+         compositor_data.external_begin_frame_controller.get());
+   }
+ 
++  if (compositor->enable_manual_begin_frame_control()) {
++    compositor->SetBeginFrameControllerMojo(
++        compositor_data.begin_frame_controller_mojo.get());
++  }
++
+ #if BUILDFLAG(IS_WIN)
+   // Windows using the ANGLE D3D backend for compositing needs to disable swap
+   // on resize to avoid D3D scaling the framebuffer texture. This isn't a
+diff --git a/content/browser/compositor/viz_process_transport_factory.h b/content/browser/compositor/viz_process_transport_factory.h
+index 4473da808978854e24bc3f83770d1372a2ee7a31..bba0f905fd90342936620ef01ad1f997c916ac7c 100644
+--- a/content/browser/compositor/viz_process_transport_factory.h
++++ b/content/browser/compositor/viz_process_transport_factory.h
+@@ -96,6 +96,8 @@ class VizProcessTransportFactory : public ui::ContextFactory,
+     std::unique_ptr<viz::HostDisplayClient> display_client;
+     mojo::AssociatedRemote<viz::mojom::ExternalBeginFrameController>
+         external_begin_frame_controller;
++    mojo::AssociatedRemote<viz::mojom::BeginFrameControllerMojo>
++        begin_frame_controller_mojo;
+   };
+ 
+   // Disables GPU compositing. This notifies UI and renderer compositors to drop
+diff --git a/gpu/GLES2/gl2chromium_autogen.h b/gpu/GLES2/gl2chromium_autogen.h
+index b4ee5a07f6c34ce7f4b30c44fa44d7c1f284384a..24ca089e5d558fa8ae375c06b78395dbacd10592 100644
+--- a/gpu/GLES2/gl2chromium_autogen.h
++++ b/gpu/GLES2/gl2chromium_autogen.h
+@@ -400,6 +400,7 @@
+   GLES2_GET_FUN(BeginBatchReadAccessSharedImageCHROMIUM)
+ #define glEndBatchReadAccessSharedImageCHROMIUM \
+   GLES2_GET_FUN(EndBatchReadAccessSharedImageCHROMIUM)
++#define glFramebufferBackbuffer GLES2_GET_FUN(FramebufferBackbuffer)
+ #define glEnableiOES GLES2_GET_FUN(EnableiOES)
+ #define glDisableiOES GLES2_GET_FUN(DisableiOES)
+ #define glBlendEquationiOES GLES2_GET_FUN(BlendEquationiOES)
+diff --git a/gpu/GLES2/gl2extchromium.h b/gpu/GLES2/gl2extchromium.h
+index e7087e6261ab06e023fc1c8f29b7a1d944482432..a58db37edb7c2e942b6b6ab5d4a9ac0fac1dc97f 100644
+--- a/gpu/GLES2/gl2extchromium.h
++++ b/gpu/GLES2/gl2extchromium.h
+@@ -912,6 +912,33 @@ typedef void(GL_APIENTRYP PFNGLSETCOLORSPACEMETADATACHROMIUM)(
+ #define GL_SHARED_IMAGE_ACCESS_MODE_READ_CHROMIUM 0x8AF6
+ #define GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM 0x8AF7
+ #define GL_SHARED_IMAGE_ACCESS_MODE_OVERLAY_CHROMIUM 0x8AF8
++#ifdef GL_GLEXT_PROTOTYPES
++GL_APICALL GLuint GL_APIENTRY
++glCreateAndTexStorage2DSharedImageCHROMIUM(const GLbyte* mailbox);
++GL_APICALL GLuint GL_APIENTRY
++glCreateAndTexStorage2DSharedImageWithInternalFormatCHROMIUM(
++    const GLbyte* mailbox,
++    GLenum internalformat);
++GL_APICALL void GL_APIENTRY
++glCreateAndTexStorage2DSharedImageINTERNAL(GLuint texture,
++                                           GLenum internalformat,
++                                           const GLbyte* mailbox);
++GL_APICALL void GL_APIENTRY
++glBeginSharedImageAccessDirectCHROMIUM(GLuint texture,
++                                       GLenum mode);
++GL_APICALL void GL_APIENTRY
++glEndSharedImageAccessDirectCHROMIUM(GLuint texture);
++GL_APICALL void GL_APIENTRY
++glBeginBatchReadAccessSharedImageCHROMIUM(void);
++GL_APICALL void GL_APIENTRY
++glEndBatchReadAccessSharedImageCHROMIUM(void);
++GL_APICALL void GL_APIENTRY
++glShallowFinishCHROMIUM (void);
++GL_APICALL void GL_APIENTRY
++glShallowFlushCHROMIUM (void);
++GL_APICALL void GL_APIENTRY
++glOrderingBarrierCHROMIUM(void);
++#endif
+ #endif /* GL_CHROMIUM_shared_image */
+ 
+ /* GL_CHROMIUM_program_completion_query */
+diff --git a/gpu/command_buffer/build_gles2_cmd_buffer.py b/gpu/command_buffer/build_gles2_cmd_buffer.py
+index f759df7f9920a00d481640a3e5e29c834b855596..cae002508c37b291abe2091bd7f9a9f188f04bf6 100755
+--- a/gpu/command_buffer/build_gles2_cmd_buffer.py
++++ b/gpu/command_buffer/build_gles2_cmd_buffer.py
+@@ -4186,6 +4186,11 @@ _FUNCTION_INFO = {
+     'decoder_func': 'DoEndBatchReadAccessSharedImageCHROMIUM',
+     'extension': 'CHROMIUM_shared_image',
+     'unit_test': False,
++  },
++  'FramebufferBackbuffer': {
++    'decoder_func': 'DoFramebufferBackbuffer',
++    'unit_test': False,
++    'client_test': False,
+   }
+ 
+ }
+diff --git a/gpu/command_buffer/client/gles2_c_lib_autogen.h b/gpu/command_buffer/client/gles2_c_lib_autogen.h
+index 128eb8200f11e18ebfccb158c61ebcaa1e87bd6e..df00ceb95d65f0ff73f7d13e5c2ec9a9bbd8ccaf 100644
+--- a/gpu/command_buffer/client/gles2_c_lib_autogen.h
++++ b/gpu/command_buffer/client/gles2_c_lib_autogen.h
+@@ -1808,6 +1808,9 @@ void GL_APIENTRY GLES2BeginBatchReadAccessSharedImageCHROMIUM() {
+ void GL_APIENTRY GLES2EndBatchReadAccessSharedImageCHROMIUM() {
+   gles2::GetGLContext()->EndBatchReadAccessSharedImageCHROMIUM();
+ }
++void GL_APIENTRY GLES2FramebufferBackbuffer(GLuint framebuffer) {
++  gles2::GetGLContext()->FramebufferBackbuffer(framebuffer);
++}
+ void GL_APIENTRY GLES2EnableiOES(GLenum target, GLuint index) {
+   gles2::GetGLContext()->EnableiOES(target, index);
+ }
+@@ -3273,6 +3276,10 @@ extern const NameToFunc g_gles2_function_table[] = {
+         reinterpret_cast<GLES2FunctionPointer>(
+             glEndBatchReadAccessSharedImageCHROMIUM),
+     },
++    {
++        "glFramebufferBackbuffer",
++        reinterpret_cast<GLES2FunctionPointer>(glFramebufferBackbuffer),
++    },
+     {
+         "glEnableiOES",
+         reinterpret_cast<GLES2FunctionPointer>(glEnableiOES),
+diff --git a/gpu/command_buffer/client/gles2_cmd_helper_autogen.h b/gpu/command_buffer/client/gles2_cmd_helper_autogen.h
+index 390b85f0e7ca8c5c866ff586e2d31b1841653b51..db1cff246852d212bc177895d26a51d92e514ec2 100644
+--- a/gpu/command_buffer/client/gles2_cmd_helper_autogen.h
++++ b/gpu/command_buffer/client/gles2_cmd_helper_autogen.h
+@@ -3383,6 +3383,14 @@ void EndBatchReadAccessSharedImageCHROMIUM() {
+   }
+ }
+ 
++void FramebufferBackbuffer(GLuint framebuffer) {
++  gles2::cmds::FramebufferBackbuffer* c =
++      GetCmdSpace<gles2::cmds::FramebufferBackbuffer>();
++  if (c) {
++    c->Init(framebuffer);
++  }
++}
++
+ void EnableiOES(GLenum target, GLuint index) {
+   gles2::cmds::EnableiOES* c = GetCmdSpace<gles2::cmds::EnableiOES>();
+   if (c) {
+diff --git a/gpu/command_buffer/client/gles2_implementation.cc b/gpu/command_buffer/client/gles2_implementation.cc
+index 7081228508e061a1ede6ff2d0d42c96e28a93800..634d2c7b81632e0a1e5ef4704888491f9432abbe 100644
+--- a/gpu/command_buffer/client/gles2_implementation.cc
++++ b/gpu/command_buffer/client/gles2_implementation.cc
+@@ -83,19 +83,22 @@
+ //
+ // If it was up to us we'd just always write to the destination but the OpenGL
+ // spec defines the behavior of OpenGL functions, not us. :-(
+-#if defined(__native_client__) || defined(GLES2_CONFORMANCE_TESTS)
++// #if defined(__native_client__) || defined(GLES2_CONFORMANCE_TESTS)
++// #define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v)
++// #define GPU_CLIENT_DCHECK(v)
++// #elif defined(GPU_DCHECK)
++// #define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v) GPU_DCHECK(v)
++// #define GPU_CLIENT_DCHECK(v) GPU_DCHECK(v)
++// #elif defined(DCHECK)
++// #define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v) DCHECK(v)
++// #define GPU_CLIENT_DCHECK(v) DCHECK(v)
++// #else
++// #define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v) ASSERT(v)
++// #define GPU_CLIENT_DCHECK(v) ASSERT(v)
++// #endif
++
+ #define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v)
+ #define GPU_CLIENT_DCHECK(v)
+-#elif defined(GPU_DCHECK)
+-#define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v) GPU_DCHECK(v)
+-#define GPU_CLIENT_DCHECK(v) GPU_DCHECK(v)
+-#elif defined(DCHECK)
+-#define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v) DCHECK(v)
+-#define GPU_CLIENT_DCHECK(v) DCHECK(v)
+-#else
+-#define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(v) ASSERT(v)
+-#define GPU_CLIENT_DCHECK(v) ASSERT(v)
+-#endif
+ 
+ #define GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION(type, ptr) \
+   GPU_CLIENT_VALIDATE_DESTINATION_INITALIZATION_ASSERT(          \
+diff --git a/gpu/command_buffer/client/gles2_implementation_autogen.h b/gpu/command_buffer/client/gles2_implementation_autogen.h
+index f2ec6d8233dbd61d060a56555dae0e422ab7e2e5..9a47fcfbef8231aed02ff4a30447bb7d05abe809 100644
+--- a/gpu/command_buffer/client/gles2_implementation_autogen.h
++++ b/gpu/command_buffer/client/gles2_implementation_autogen.h
+@@ -1272,6 +1272,8 @@ void BeginBatchReadAccessSharedImageCHROMIUM() override;
+ 
+ void EndBatchReadAccessSharedImageCHROMIUM() override;
+ 
++void FramebufferBackbuffer(GLuint framebuffer) override;
++
+ void EnableiOES(GLenum target, GLuint index) override;
+ 
+ void DisableiOES(GLenum target, GLuint index) override;
+diff --git a/gpu/command_buffer/client/gles2_implementation_impl_autogen.h b/gpu/command_buffer/client/gles2_implementation_impl_autogen.h
+index 9bff1f350b4731c14b86e199cf51351a7a4ea683..19d604e35a2cd1e0666bbfdf6c2ffb2b148d1d29 100644
+--- a/gpu/command_buffer/client/gles2_implementation_impl_autogen.h
++++ b/gpu/command_buffer/client/gles2_implementation_impl_autogen.h
+@@ -3698,6 +3698,14 @@ void GLES2Implementation::EndBatchReadAccessSharedImageCHROMIUM() {
+   CheckGLError();
+ }
+ 
++void GLES2Implementation::FramebufferBackbuffer(GLuint framebuffer) {
++  GPU_CLIENT_SINGLE_THREAD_CHECK();
++  GPU_CLIENT_LOG("[" << GetLogPrefix() << "] glFramebufferBackbuffer("
++                     << framebuffer << ")");
++  helper_->FramebufferBackbuffer(framebuffer);
++  CheckGLError();
++}
++
+ void GLES2Implementation::BlendEquationiOES(GLuint buf, GLenum mode) {
+   GPU_CLIENT_SINGLE_THREAD_CHECK();
+   GPU_CLIENT_LOG("[" << GetLogPrefix() << "] glBlendEquationiOES(" << buf
+diff --git a/gpu/command_buffer/client/gles2_interface_autogen.h b/gpu/command_buffer/client/gles2_interface_autogen.h
+index c35e07b4644f1b2b0197a4cb9d0e3821f4da6e8f..e5ed1cb99f792dca186a874155153e1476ab04d9 100644
+--- a/gpu/command_buffer/client/gles2_interface_autogen.h
++++ b/gpu/command_buffer/client/gles2_interface_autogen.h
+@@ -951,6 +951,7 @@ virtual void BeginSharedImageAccessDirectCHROMIUM(GLuint texture,
+ virtual void EndSharedImageAccessDirectCHROMIUM(GLuint texture) = 0;
+ virtual void BeginBatchReadAccessSharedImageCHROMIUM() = 0;
+ virtual void EndBatchReadAccessSharedImageCHROMIUM() = 0;
++virtual void FramebufferBackbuffer(GLuint framebuffer) = 0;
+ virtual void EnableiOES(GLenum target, GLuint index) = 0;
+ virtual void DisableiOES(GLenum target, GLuint index) = 0;
+ virtual void BlendEquationiOES(GLuint buf, GLenum mode) = 0;
+diff --git a/gpu/command_buffer/client/gles2_interface_stub_autogen.h b/gpu/command_buffer/client/gles2_interface_stub_autogen.h
+index fa3798f519d3470dfba67228bc67fe7312a4b946..3f301548afecf86ee5d42a758fffe7c599c9dac8 100644
+--- a/gpu/command_buffer/client/gles2_interface_stub_autogen.h
++++ b/gpu/command_buffer/client/gles2_interface_stub_autogen.h
+@@ -921,6 +921,7 @@ void BeginSharedImageAccessDirectCHROMIUM(GLuint texture, GLenum mode) override;
+ void EndSharedImageAccessDirectCHROMIUM(GLuint texture) override;
+ void BeginBatchReadAccessSharedImageCHROMIUM() override;
+ void EndBatchReadAccessSharedImageCHROMIUM() override;
++void FramebufferBackbuffer(GLuint framebuffer) override;
+ void EnableiOES(GLenum target, GLuint index) override;
+ void DisableiOES(GLenum target, GLuint index) override;
+ void BlendEquationiOES(GLuint buf, GLenum mode) override;
+diff --git a/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h b/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h
+index 76fb3d2f1f8a7275cb1fac0a8b76427b8cb97aa6..fad36e579494330d6debe65af01221876ce00994 100644
+--- a/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h
++++ b/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h
+@@ -1235,6 +1235,7 @@ void GLES2InterfaceStub::EndSharedImageAccessDirectCHROMIUM(
+     GLuint /* texture */) {}
+ void GLES2InterfaceStub::BeginBatchReadAccessSharedImageCHROMIUM() {}
+ void GLES2InterfaceStub::EndBatchReadAccessSharedImageCHROMIUM() {}
++void GLES2InterfaceStub::FramebufferBackbuffer(GLuint /* framebuffer */) {}
+ void GLES2InterfaceStub::EnableiOES(GLenum /* target */, GLuint /* index */) {}
+ void GLES2InterfaceStub::DisableiOES(GLenum /* target */, GLuint /* index */) {}
+ void GLES2InterfaceStub::BlendEquationiOES(GLuint /* buf */,
+diff --git a/gpu/command_buffer/client/gles2_trace_implementation_autogen.h b/gpu/command_buffer/client/gles2_trace_implementation_autogen.h
+index a8a7a9193c44eafa09b519fadce68f8f9fb34336..30c3993518e519869a93c72fbf1d9cd279ac36f2 100644
+--- a/gpu/command_buffer/client/gles2_trace_implementation_autogen.h
++++ b/gpu/command_buffer/client/gles2_trace_implementation_autogen.h
+@@ -921,6 +921,7 @@ void BeginSharedImageAccessDirectCHROMIUM(GLuint texture, GLenum mode) override;
+ void EndSharedImageAccessDirectCHROMIUM(GLuint texture) override;
+ void BeginBatchReadAccessSharedImageCHROMIUM() override;
+ void EndBatchReadAccessSharedImageCHROMIUM() override;
++void FramebufferBackbuffer(GLuint framebuffer) override;
+ void EnableiOES(GLenum target, GLuint index) override;
+ void DisableiOES(GLenum target, GLuint index) override;
+ void BlendEquationiOES(GLuint buf, GLenum mode) override;
+diff --git a/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h b/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h
+index 6bc45021b1c68ba74f6e5a5b45cbed0d52910c7a..3dddede03a1b093f88984d9f47f245d3bef609b2 100644
+--- a/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h
++++ b/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h
+@@ -2617,6 +2617,11 @@ void GLES2TraceImplementation::EndBatchReadAccessSharedImageCHROMIUM() {
+   gl_->EndBatchReadAccessSharedImageCHROMIUM();
+ }
+ 
++void GLES2TraceImplementation::FramebufferBackbuffer(GLuint framebuffer) {
++  TRACE_EVENT_BINARY_EFFICIENT0("gpu", "GLES2Trace::FramebufferBackbuffer");
++  gl_->FramebufferBackbuffer(framebuffer);
++}
++
+ void GLES2TraceImplementation::EnableiOES(GLenum target, GLuint index) {
+   TRACE_EVENT_BINARY_EFFICIENT0("gpu", "GLES2Trace::EnableiOES");
+   gl_->EnableiOES(target, index);
+diff --git a/gpu/command_buffer/common/gles2_cmd_format_autogen.h b/gpu/command_buffer/common/gles2_cmd_format_autogen.h
+index 98961dbaef56cf2f69cf48841128af067c1e356c..9d25a6594d4e571173b56112a1b58c7b71c5e939 100644
+--- a/gpu/command_buffer/common/gles2_cmd_format_autogen.h
++++ b/gpu/command_buffer/common/gles2_cmd_format_autogen.h
+@@ -16638,6 +16638,39 @@ static_assert(
+     offsetof(EndBatchReadAccessSharedImageCHROMIUM, header) == 0,
+     "offset of EndBatchReadAccessSharedImageCHROMIUM header should be 0");
+ 
++struct FramebufferBackbuffer {
++  typedef FramebufferBackbuffer ValueType;
++  static const CommandId kCmdId = kFramebufferBackbuffer;
++  static const cmd::ArgFlags kArgFlags = cmd::kFixed;
++  static const uint8_t cmd_flags = CMD_FLAG_SET_TRACE_LEVEL(3);
++
++  static uint32_t ComputeSize() {
++    return static_cast<uint32_t>(sizeof(ValueType));  // NOLINT
++  }
++
++  void SetHeader() { header.SetCmd<ValueType>(); }
++
++  void Init(GLuint _framebuffer) {
++    SetHeader();
++    framebuffer = _framebuffer;
++  }
++
++  void* Set(void* cmd, GLuint _framebuffer) {
++    static_cast<ValueType*>(cmd)->Init(_framebuffer);
++    return NextCmdAddress<ValueType>(cmd);
++  }
++
++  gpu::CommandHeader header;
++  uint32_t framebuffer;
++};
++
++static_assert(sizeof(FramebufferBackbuffer) == 8,
++              "size of FramebufferBackbuffer should be 8");
++static_assert(offsetof(FramebufferBackbuffer, header) == 0,
++              "offset of FramebufferBackbuffer header should be 0");
++static_assert(offsetof(FramebufferBackbuffer, framebuffer) == 4,
++              "offset of FramebufferBackbuffer framebuffer should be 4");
++
+ struct EnableiOES {
+   typedef EnableiOES ValueType;
+   static const CommandId kCmdId = kEnableiOES;
+diff --git a/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h b/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h
+index e32c97f76ad3c715e160756962eb34f79059a0d8..7b316e29a7a13e1eb0f20b69c844b21315533233 100644
+--- a/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h
++++ b/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h
+@@ -5497,6 +5497,17 @@ TEST_F(GLES2FormatTest, EndBatchReadAccessSharedImageCHROMIUM) {
+   CheckBytesWrittenMatchesExpectedSize(next_cmd, sizeof(cmd));
+ }
+ 
++TEST_F(GLES2FormatTest, FramebufferBackbuffer) {
++  cmds::FramebufferBackbuffer& cmd =
++      *GetBufferAs<cmds::FramebufferBackbuffer>();
++  void* next_cmd = cmd.Set(&cmd, static_cast<GLuint>(11));
++  EXPECT_EQ(static_cast<uint32_t>(cmds::FramebufferBackbuffer::kCmdId),
++            cmd.header.command);
++  EXPECT_EQ(sizeof(cmd), cmd.header.size * 4u);
++  EXPECT_EQ(static_cast<GLuint>(11), cmd.framebuffer);
++  CheckBytesWrittenMatchesExpectedSize(next_cmd, sizeof(cmd));
++}
++
+ TEST_F(GLES2FormatTest, EnableiOES) {
+   cmds::EnableiOES& cmd = *GetBufferAs<cmds::EnableiOES>();
+   void* next_cmd =
+diff --git a/gpu/command_buffer/common/gles2_cmd_ids_autogen.h b/gpu/command_buffer/common/gles2_cmd_ids_autogen.h
+index ea3a56cb63920a5a218b27d139183a946ae928ce..b784e5365b7dc554341ec13d9d7a66b47ac55257 100644
+--- a/gpu/command_buffer/common/gles2_cmd_ids_autogen.h
++++ b/gpu/command_buffer/common/gles2_cmd_ids_autogen.h
+@@ -345,14 +345,15 @@
+   OP(EndSharedImageAccessDirectCHROMIUM)                       /* 586 */ \
+   OP(BeginBatchReadAccessSharedImageCHROMIUM)                  /* 587 */ \
+   OP(EndBatchReadAccessSharedImageCHROMIUM)                    /* 588 */ \
+-  OP(EnableiOES)                                               /* 589 */ \
+-  OP(DisableiOES)                                              /* 590 */ \
+-  OP(BlendEquationiOES)                                        /* 591 */ \
+-  OP(BlendEquationSeparateiOES)                                /* 592 */ \
+-  OP(BlendFunciOES)                                            /* 593 */ \
+-  OP(BlendFuncSeparateiOES)                                    /* 594 */ \
+-  OP(ColorMaskiOES)                                            /* 595 */ \
+-  OP(IsEnablediOES)                                            /* 596 */
++  OP(FramebufferBackbuffer)                                    /* 589 */ \
++  OP(EnableiOES)                                               /* 590 */ \
++  OP(DisableiOES)                                              /* 591 */ \
++  OP(BlendEquationiOES)                                        /* 592 */ \
++  OP(BlendEquationSeparateiOES)                                /* 593 */ \
++  OP(BlendFunciOES)                                            /* 594 */ \
++  OP(BlendFuncSeparateiOES)                                    /* 595 */ \
++  OP(ColorMaskiOES)                                            /* 596 */ \
++  OP(IsEnablediOES)                                            /* 597 */
+ 
+ enum CommandId {
+   kOneBeforeStartPoint =
+diff --git a/gpu/command_buffer/common/gles2_cmd_utils_implementation_autogen.h b/gpu/command_buffer/common/gles2_cmd_utils_implementation_autogen.h
+index 292165f72e858494811e97c3aab7c26fba661795..59575da8411d7fb6f7e3ab42e87aa0ddc54a8930 100644
+--- a/gpu/command_buffer/common/gles2_cmd_utils_implementation_autogen.h
++++ b/gpu/command_buffer/common/gles2_cmd_utils_implementation_autogen.h
+@@ -6789,6 +6789,10 @@ static const GLES2Util::EnumToString enum_to_string_table[] = {
+         0x96A2,
+         "GL_FRAMEBUFFER_FETCH_NONCOHERENT_QCOM",
+     },
++    {
++        0x96BA,
++        "GL_RGBX8_ANGLE",
++    },
+     {
+         0xC0,
+         "GL_SHARED_EDGE_NV",
+diff --git a/gpu/command_buffer/gles2_cmd_buffer_functions.txt b/gpu/command_buffer/gles2_cmd_buffer_functions.txt
+index f6e8734ed32fd4e39ad0fbfabe6ddd55e5e7ac1f..83b765c354e247a2d4e69e7cdb1dc3c26d90a082 100644
+--- a/gpu/command_buffer/gles2_cmd_buffer_functions.txt
++++ b/gpu/command_buffer/gles2_cmd_buffer_functions.txt
+@@ -411,6 +411,9 @@ GL_APICALL void         GL_APIENTRY glEndSharedImageAccessDirectCHROMIUM (GLuint
+ GL_APICALL void         GL_APIENTRY glBeginBatchReadAccessSharedImageCHROMIUM (void);
+ GL_APICALL void         GL_APIENTRY glEndBatchReadAccessSharedImageCHROMIUM (void);
+ 
++// Extension CHROMIUM_set_backbuffer
++GL_APICALL void         GL_APIENTRY glFramebufferBackbuffer (GLuint framebuffer);
++
+ // Extension OES_draw_buffers_indexed
+ GL_APICALL void         GL_APIENTRY glEnableiOES (GLenum target, GLuint index);
+ GL_APICALL void         GL_APIENTRY glDisableiOES (GLenum target, GLuint index);
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder.cc b/gpu/command_buffer/service/gles2_cmd_decoder.cc
+index 52817d55d8342d3a7614eabcb289c81696e038ca..fdbb6ac44c972685ff97e34f749badf5f9068243 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder.cc
+@@ -1238,6 +1238,8 @@ class GLES2DecoderImpl : public GLES2Decoder,
+   void DoBeginBatchReadAccessSharedImageCHROMIUM();
+   void DoEndBatchReadAccessSharedImageCHROMIUM();
+ 
++  void DoFramebufferBackbuffer(GLuint client_id);
++
+   void BindImage(uint32_t client_texture_id,
+                  uint32_t texture_target,
+                  gl::GLImage* image,
+@@ -2631,6 +2633,10 @@ class GLES2DecoderImpl : public GLES2Decoder,
+   // The size of fiixed attrib buffer.
+   GLsizei fixed_attrib_buffer_size_;
+ 
++  // The buffer used to replace the backbuffer with an FBO.
++  GLuint backbuffer_framebuffer_service_id_;
++  GLuint backbuffer_framebuffer_client_id_;
++
+   // The offscreen frame buffer that the client renders to. With EGL, the
+   // depth and stencil buffers are separate. With regular GL there is a single
+   // packed depth stencil buffer in offscreen_target_depth_render_buffer_.
+@@ -3507,6 +3513,8 @@ GLES2DecoderImpl::GLES2DecoderImpl(
+       attrib_0_size_(0),
+       fixed_attrib_buffer_id_(0),
+       fixed_attrib_buffer_size_(0),
++      backbuffer_framebuffer_service_id_(0),
++      backbuffer_framebuffer_client_id_(0),
+       offscreen_target_color_format_(0),
+       offscreen_target_depth_format_(0),
+       offscreen_target_stencil_format_(0),
+@@ -6337,9 +6345,16 @@ void GLES2DecoderImpl::ApplyDirtyState() {
+ }
+ 
+ GLuint GLES2DecoderImpl::GetBackbufferServiceId() const {
+-  return (offscreen_target_frame_buffer_.get())
+-             ? offscreen_target_frame_buffer_->id()
+-             : (surface_.get() ? surface_->GetBackingFramebufferObject() : 0);
++  if (offscreen_target_frame_buffer_.get())
++    return offscreen_target_frame_buffer_->id();
++
++  if (backbuffer_framebuffer_service_id_)
++    return backbuffer_framebuffer_service_id_;
++
++  if (surface_.get())
++    return surface_->GetBackingFramebufferObject();
++
++  return 0;
+ }
+ 
+ void GLES2DecoderImpl::RestoreState(const ContextState* prev_state) {
+@@ -6521,6 +6536,11 @@ void GLES2DecoderImpl::DoBindFramebuffer(GLenum target, GLuint client_id) {
+   }
+   LogClientServiceForInfo(framebuffer, client_id, "glBindFramebuffer");
+ 
++  Framebuffer* bound_framebuffer =
++      framebuffer_state_.bound_draw_framebuffer.get();
++  if (bound_framebuffer && bound_framebuffer->service_id() == service_id)
++    return;
++
+   if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER_EXT) {
+     framebuffer_state_.bound_draw_framebuffer = framebuffer;
+     state_.UpdateWindowRectanglesForBoundDrawFramebufferClientID(client_id);
+@@ -7494,6 +7514,9 @@ bool GLES2DecoderImpl::GetHelper(
+         *params = GetClientId(
+             framebuffer_manager(),
+             GetFramebufferInfoForTarget(GL_FRAMEBUFFER));
++        if (*params == (GLint)backbuffer_framebuffer_client_id_) {
++          *params = 0;
++        }
+       }
+       return true;
+     case GL_READ_FRAMEBUFFER_BINDING_EXT:
+@@ -7502,6 +7525,9 @@ bool GLES2DecoderImpl::GetHelper(
+         *params = GetClientId(
+             framebuffer_manager(),
+             GetFramebufferInfoForTarget(GL_READ_FRAMEBUFFER_EXT));
++        if (*params == (GLint)backbuffer_framebuffer_client_id_) {
++          *params = 0;
++        }
+       }
+       return true;
+     case GL_RENDERBUFFER_BINDING:
+@@ -19083,6 +19109,22 @@ void GLES2DecoderImpl::DoEndBatchReadAccessSharedImageCHROMIUM() {
+   }
+ }
+ 
++void GLES2DecoderImpl::DoFramebufferBackbuffer(GLuint client_id) {
++  if (client_id != 0) {
++    Framebuffer* framebuffer = GetFramebuffer(client_id);
++
++    if (!framebuffer || framebuffer->IsDeleted()) {
++      LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "DoFramebufferBackbuffer",
++                         "invalid frambuffer id");
++      return;
++    }
++
++    backbuffer_framebuffer_client_id_ = client_id;
++  } else {
++    backbuffer_framebuffer_client_id_ = 0;
++  }
++}
++
+ void GLES2DecoderImpl::DoInsertEventMarkerEXT(
+     GLsizei length, const GLchar* marker) {
+   if (!marker) {
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h b/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h
+index 85544c95213ff89ea21e9f9dfb897958d7ab951b..b966fd8db20c33eb8b243722fb2cb6c7740334ba 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h
+@@ -5579,6 +5579,17 @@ error::Error GLES2DecoderImpl::HandleEndBatchReadAccessSharedImageCHROMIUM(
+   return error::kNoError;
+ }
+ 
++error::Error GLES2DecoderImpl::HandleFramebufferBackbuffer(
++    uint32_t immediate_data_size,
++    const volatile void* cmd_data) {
++  const volatile gles2::cmds::FramebufferBackbuffer& c =
++      *static_cast<const volatile gles2::cmds::FramebufferBackbuffer*>(
++          cmd_data);
++  GLuint framebuffer = static_cast<GLuint>(c.framebuffer);
++  DoFramebufferBackbuffer(framebuffer);
++  return error::kNoError;
++}
++
+ error::Error GLES2DecoderImpl::HandleEnableiOES(uint32_t immediate_data_size,
+                                                 const volatile void* cmd_data) {
+   const volatile gles2::cmds::EnableiOES& c =
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h
+index 044308ce034792fa290e61b8db3b42b1b1b77508..4ee80fa43548df691cbe755bd83543692b6f2a0f 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h
+@@ -1110,6 +1110,7 @@ error::Error DoBeginSharedImageAccessDirectCHROMIUM(GLuint client_id,
+ error::Error DoEndSharedImageAccessDirectCHROMIUM(GLuint client_id);
+ error::Error DoBeginBatchReadAccessSharedImageCHROMIUM(void);
+ error::Error DoEndBatchReadAccessSharedImageCHROMIUM(void);
++error::Error DoFramebufferBackbuffer(GLuint client_id);
+ error::Error DoEnableiOES(GLenum target, GLuint index);
+ error::Error DoDisableiOES(GLenum target, GLuint index);
+ error::Error DoBlendEquationiOES(GLuint buf, GLenum mode);
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
+index 7bda06215d8597dfd86eceaead016264854c1f12..1058a14591a4e4964d59073c7e09730a28b8238f 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
+@@ -5449,6 +5449,12 @@ GLES2DecoderPassthroughImpl::DoEndBatchReadAccessSharedImageCHROMIUM() {
+   return error::kNoError;
+ }
+ 
++error::Error GLES2DecoderPassthroughImpl::DoFramebufferBackbuffer(
++    GLuint client_id) {
++  NOTIMPLEMENTED();
++  return error::kNoError;
++}
++
+ error::Error GLES2DecoderPassthroughImpl::DoEnableiOES(GLenum target,
+                                                        GLuint index) {
+   api()->glEnableiOESFn(target, index);
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc
+index d24c1f37389b137c5bdc9627a88da3831bd251ff..2fb731481b6f25ee534726f144835f3ff180ca62 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc
+@@ -4841,6 +4841,20 @@ GLES2DecoderPassthroughImpl::HandleEndBatchReadAccessSharedImageCHROMIUM(
+   return error::kNoError;
+ }
+ 
++error::Error GLES2DecoderPassthroughImpl::HandleFramebufferBackbuffer(
++    uint32_t immediate_data_size,
++    const volatile void* cmd_data) {
++  const volatile gles2::cmds::FramebufferBackbuffer& c =
++      *static_cast<const volatile gles2::cmds::FramebufferBackbuffer*>(
++          cmd_data);
++  GLuint framebuffer = static_cast<GLuint>(c.framebuffer);
++  error::Error error = DoFramebufferBackbuffer(framebuffer);
++  if (error != error::kNoError) {
++    return error;
++  }
++  return error::kNoError;
++}
++
+ error::Error GLES2DecoderPassthroughImpl::HandleEnableiOES(
+     uint32_t immediate_data_size,
+     const volatile void* cmd_data) {
+diff --git a/gpu/command_buffer/service/shared_image_factory.cc b/gpu/command_buffer/service/shared_image_factory.cc
+index fe3b7510a54ee5d43eedfdd282ffbbcb279cc5ff..6ce90bcc5ecde92c44f321b9c4cfb0f89505e3b6 100644
+--- a/gpu/command_buffer/service/shared_image_factory.cc
++++ b/gpu/command_buffer/service/shared_image_factory.cc
+@@ -314,8 +314,10 @@ bool SharedImageFactory::CreateSharedImage(const Mailbox& mailbox,
+   // SHARED_IMAGE_USAGE_SCANOUT.
+   // TODO(ericrk): SCANOUT support for Vulkan by ensuring all interop factories
+   // support this, and allowing them to be chosen here.
+-  constexpr uint32_t allowed_usage =
+-      SHARED_IMAGE_USAGE_DISPLAY | SHARED_IMAGE_USAGE_SCANOUT;
++  constexpr uint32_t allowed_usage = SHARED_IMAGE_USAGE_GLES2 |
++                                     SHARED_IMAGE_USAGE_GLES2_FRAMEBUFFER_HINT |
++                                     SHARED_IMAGE_USAGE_DISPLAY |
++                                     SHARED_IMAGE_USAGE_SCANOUT;
+   if (usage & ~allowed_usage) {
+     LOG(ERROR) << "Unsupported usage for SharedImage with initial data upload.";
+     return false;
+diff --git a/gpu/ipc/scheduler_sequence.h b/gpu/ipc/scheduler_sequence.h
+index 836e1f441836295041340cbdd4cab48556fa406f..d84750143e1659f85cb4fea7751dfae1db5c4670 100644
+--- a/gpu/ipc/scheduler_sequence.h
++++ b/gpu/ipc/scheduler_sequence.h
+@@ -22,6 +22,7 @@ class Display;
+ class DisplayCompositorMemoryAndTaskController;
+ class ScopedAllowGpuAccessForDisplayResourceProvider;
+ class OutputSurfaceProviderImpl;
++class SkiaOutputSurfaceImpl;
+ class OverlayProcessorAndroid;
+ }  // namespace viz
+ 
+@@ -45,6 +46,7 @@ class GL_IN_PROCESS_CONTEXT_EXPORT ScopedAllowScheduleGpuTask {
+   friend class viz::DisplayCompositorMemoryAndTaskController;
+   friend class viz::ScopedAllowGpuAccessForDisplayResourceProvider;
+   friend class viz::OutputSurfaceProviderImpl;
++  friend class viz::SkiaOutputSurfaceImpl;
+   // Overlay is not supported for WebView. However the initialization and
+   // destruction of OverlayProcessor requires posting task to gpu thread, which
+   // would trigger DCHECK, even though the task posting would not run on
+diff --git a/mojo/public/cpp/bindings/sync_call_restrictions.h b/mojo/public/cpp/bindings/sync_call_restrictions.h
+index e7e67ee824b2a87eb14b45a3f2d76d471ff864fb..b2444d4d4f6324a09c60ff0572fd34b37ba2e7e2 100644
+--- a/mojo/public/cpp/bindings/sync_call_restrictions.h
++++ b/mojo/public/cpp/bindings/sync_call_restrictions.h
+@@ -45,6 +45,7 @@ namespace viz {
+ class GpuHostImpl;
+ class HostFrameSinkManager;
+ class HostGpuMemoryBufferManager;
++class RootCompositorFrameSinkImpl;
+ }  // namespace viz
+ 
+ namespace mojo {
+@@ -97,6 +98,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) SyncCallRestrictions {
+   friend class crosapi::ScopedAllowSyncCall;
+   friend class mojo::ScopedAllowSyncCallForTesting;
+   friend class viz::GpuHostImpl;
++  friend class viz::RootCompositorFrameSinkImpl;
+   // For destroying the GL context/surface that draw to a platform window before
+   // the platform window is destroyed.
+   friend class viz::HostFrameSinkManager;
+diff --git a/ppapi/api/ppb_opengles2.idl b/ppapi/api/ppb_opengles2.idl
+index 5f08099286005882782cb7ab56be0f2e3f156dd1..b5cf1ea2b530834b830146d688dab2cdc1a56272 100644
+--- a/ppapi/api/ppb_opengles2.idl
++++ b/ppapi/api/ppb_opengles2.idl
+@@ -619,6 +619,8 @@ interface PPB_OpenGLES2 {
+                 [in] GLint y,
+                 [in] GLsizei width,
+                 [in] GLsizei height);
++  void FramebufferBackbuffer([in] PP_Resource context,
++                             [in] GLuint framebuffer);
+ };
+ 
+ 
+diff --git a/ppapi/c/ppb_opengles2.h b/ppapi/c/ppb_opengles2.h
+index b3ac0e6ab29665537d577feab54a21e9b4809826..386aea412356f5d3c8dd0386f98535fa2436b779 100644
+--- a/ppapi/c/ppb_opengles2.h
++++ b/ppapi/c/ppb_opengles2.h
+@@ -1004,6 +1004,7 @@ struct PPB_OpenGLES2 {
+                    GLint y,
+                    GLsizei width,
+                    GLsizei height);
++  void (*FramebufferBackbuffer)(PP_Resource context_id, GLuint framebuffer);
+ };
+ 
+ struct PPB_OpenGLES2InstancedArrays_1_0 {
+@@ -1192,4 +1193,3 @@ struct PPB_OpenGLES2VertexArrayObject {
+  */
+ 
+ #endif  // PPAPI_C_PPB_OPENGLES2_H_
+-
+diff --git a/ppapi/lib/gl/gles2/gles2.c b/ppapi/lib/gl/gles2/gles2.c
+index 187d1a2478d227c9f7149eb3863e563b06a20788..c57460e20f55403f0261aecbd69e2b61b91b8d2a 100644
+--- a/ppapi/lib/gl/gles2/gles2.c
++++ b/ppapi/lib/gl/gles2/gles2.c
+@@ -1046,3 +1046,8 @@ void GL_APIENTRY glDrawBuffersEXT(GLsizei count, const GLenum* bufs) {
+   if (ext)
+     ext->DrawBuffersEXT(glGetCurrentContextPPAPI(), count, bufs);
+ }
++
++void GL_APIENTRY glFramebufferBackbuffer(GLuint framebuffer) {
++  glGetInterfacePPAPI()->FramebufferBackbuffer(glGetCurrentContextPPAPI(),
++                                               framebuffer);
++}
+diff --git a/ppapi/shared_impl/ppb_opengles2_shared.cc b/ppapi/shared_impl/ppb_opengles2_shared.cc
+index 020b45c4e25a45bdb1063ba5ac6509608ae1daad..61412d386d341899b3069cc4461c46b3497b84c2 100644
+--- a/ppapi/shared_impl/ppb_opengles2_shared.cc
++++ b/ppapi/shared_impl/ppb_opengles2_shared.cc
+@@ -1592,6 +1592,13 @@ void DrawBuffersEXT(PP_Resource context_id, GLsizei count, const GLenum* bufs) {
+   }
+ }
+ 
++void FramebufferBackbuffer(PP_Resource context_id, GLuint framebuffer) {
++  Enter3D enter(context_id, true);
++  if (enter.succeeded()) {
++    ToGles2Impl(&enter)->FramebufferBackbuffer(framebuffer);
++  }
++}
++
+ }  // namespace
+ const PPB_OpenGLES2* PPB_OpenGLES2_Shared::GetInterface() {
+   static const struct PPB_OpenGLES2 ppb_opengles2 = {
+@@ -1736,7 +1743,8 @@ const PPB_OpenGLES2* PPB_OpenGLES2_Shared::GetInterface() {
+       &VertexAttrib4f,
+       &VertexAttrib4fv,
+       &VertexAttribPointer,
+-      &Viewport};
++      &Viewport,
++      &FramebufferBackbuffer};
+   return &ppb_opengles2;
+ }
+ const PPB_OpenGLES2InstancedArrays*
+diff --git a/services/viz/privileged/mojom/compositing/BUILD.gn b/services/viz/privileged/mojom/compositing/BUILD.gn
+index a3cf3488f98372fe777e818edfe8e812dc06300e..00583b06ec4fb2fee24325de16ae62185bdbe978 100644
+--- a/services/viz/privileged/mojom/compositing/BUILD.gn
++++ b/services/viz/privileged/mojom/compositing/BUILD.gn
+@@ -19,6 +19,7 @@ mojom("compositing") {
+   ]
+ 
+   public_deps = [
++    "//components/viz/common:single_release_callback",
+     "//gpu/ipc/common:interfaces",
+     "//media/capture/mojom:video_capture",
+     "//media/mojo/mojom",
+diff --git a/services/viz/privileged/mojom/compositing/display_private.mojom b/services/viz/privileged/mojom/compositing/display_private.mojom
+index 8e38831a6df15d37e5fb87d63613b7dbdcefacc4..180a113f9d84324cea0815a8efae317610774317 100644
+--- a/services/viz/privileged/mojom/compositing/display_private.mojom
++++ b/services/viz/privileged/mojom/compositing/display_private.mojom
+@@ -16,7 +16,9 @@ import "ui/latency/mojom/latency_info.mojom";
+ import "services/viz/privileged/mojom/compositing/begin_frame_observer.mojom";
+ import "services/viz/privileged/mojom/compositing/layered_window_updater.mojom";
+ import "services/viz/privileged/mojom/compositing/vsync_parameter_observer.mojom";
+-
++import "components/viz/common/resources/single_release_callback.mojom";
++import "gpu/ipc/common/mailbox.mojom";
++import "gpu/ipc/common/sync_token.mojom";
+ // The DisplayPrivate is used by privileged clients to talk to Display.
+ interface DisplayPrivate {
+   SetDisplayVisible(bool visible);
+@@ -125,4 +127,13 @@ interface DisplayClient {
+ 
+   [EnableIf=is_android]
+   SetPreferredRefreshRate(float refresh_rate);
++
++  [Sync]
++  IsOffscreen() => (bool offscreen);
++
++  BackingTextureCreated(gpu.mojom.Mailbox mailbox);
++
++  OnSwapBuffers(gfx.mojom.Size size,
++                gpu.mojom.SyncToken token,
++                pending_remote<SingleReleaseCallback> callback);
+ };
+diff --git a/services/viz/privileged/mojom/compositing/external_begin_frame_controller.mojom b/services/viz/privileged/mojom/compositing/external_begin_frame_controller.mojom
+index aa95208479ece1b06ac5b64acf3e63a89131581a..740cf3bb382f87c11579344e65d4bdf9dd5759c7 100644
+--- a/services/viz/privileged/mojom/compositing/external_begin_frame_controller.mojom
++++ b/services/viz/privileged/mojom/compositing/external_begin_frame_controller.mojom
+@@ -16,3 +16,8 @@ interface ExternalBeginFrameController {
+   IssueExternalBeginFrame(BeginFrameArgs args, bool force)
+       => (BeginFrameAck ack);
+ };
++
++interface BeginFrameControllerMojo {
++  IssueBeginFrame();
++  EnableBeginFrames(bool enable);
++};
+diff --git a/services/viz/privileged/mojom/compositing/frame_sink_manager.mojom b/services/viz/privileged/mojom/compositing/frame_sink_manager.mojom
+index 3997ecb0228914144d6b04595c47376679fca3ef..d341adb529f490f52aa2fdcd443df430de4e5586 100644
+--- a/services/viz/privileged/mojom/compositing/frame_sink_manager.mojom
++++ b/services/viz/privileged/mojom/compositing/frame_sink_manager.mojom
+@@ -48,6 +48,9 @@ struct RootCompositorFrameSinkParams {
+ 
+   pending_associated_receiver<ExternalBeginFrameController>?
+       external_begin_frame_controller;
++
++  pending_associated_receiver<BeginFrameControllerMojo>?
++      begin_frame_controller_mojo;
+ };
+ 
+ // The FrameSinkManager interface is a privileged interface that allows the
+diff --git a/third_party/blink/public/mojom/frame/frame.mojom b/third_party/blink/public/mojom/frame/frame.mojom
+index 88906e7b5781e42d2e1405f34c88c77ad54c0444..59a332d8c101af7fcd4e75b0b40e7fd6936f7059 100644
+--- a/third_party/blink/public/mojom/frame/frame.mojom
++++ b/third_party/blink/public/mojom/frame/frame.mojom
+@@ -1150,6 +1150,8 @@ interface LocalMainFrame {
+   // Scales the view without affecting layout by using the visual viewport.
+   SetScaleFactor(float scale);
+ 
++  SetScaleFactorCorrection(float scale);
++
+   // Instructs the renderer to close the current page, including running the
+   // onunload event handler.
+   ClosePage() => ();
+diff --git a/third_party/blink/public/web/web_view.h b/third_party/blink/public/web/web_view.h
+index c6c2dbb9dddd1eaa21e8c7b276d871a3898463fa..cc09825f3c23c6a55892d5d1178d3cc2e1763207 100644
+--- a/third_party/blink/public/web/web_view.h
++++ b/third_party/blink/public/web/web_view.h
+@@ -290,6 +290,10 @@ class WebView {
+ 
+   virtual float ZoomFactorForDeviceScaleFactor() = 0;
+ 
++  virtual void SetScaleFactorCorrection(float) = 0;
++
++  virtual float ScaleFactorCorrection() = 0;
++
+   // Override the screen orientation override.
+   virtual void SetScreenOrientationOverrideForTesting(
+       absl::optional<display::mojom::ScreenOrientation> orientation) = 0;
+diff --git a/third_party/blink/renderer/core/exported/web_view_impl.cc b/third_party/blink/renderer/core/exported/web_view_impl.cc
+index f78d5246a9e5f17089d47f95da22e922b6699057..be087620b6e529b72624b1502125a6ae2ff6ddda 100644
+--- a/third_party/blink/renderer/core/exported/web_view_impl.cc
++++ b/third_party/blink/renderer/core/exported/web_view_impl.cc
+@@ -2213,6 +2213,10 @@ double WebViewImpl::SetZoomLevel(double zoom_level) {
+       page_->SetDeviceScaleFactorDeprecated(1.f);
+       zoom_factor *= zoom_factor_for_device_scale_factor_;
+     }
++
++    page_->SetDeviceScaleFactorDeprecated(
++        device_scale_factor_ / scale_factor_correction_);
++    zoom_factor *= scale_factor_correction_;
+   }
+   PropagateZoomFactorToLocalFrameRoots(page_->MainFrame(), zoom_factor);
+ 
+@@ -2270,6 +2274,7 @@ void WebViewImpl::SetPageScaleFactor(float scale_factor) {
+ }
+ 
+ void WebViewImpl::SetDeviceScaleFactor(float scale_factor) {
++  device_scale_factor_ = scale_factor;
+   if (!GetPage())
+     return;
+ 
+@@ -2288,6 +2293,11 @@ void WebViewImpl::SetZoomFactorForDeviceScaleFactor(
+   SetZoomLevel(zoom_level_);
+ }
+ 
++void WebViewImpl::SetScaleFactorCorrection(float scale_factor_correction) {
++  scale_factor_correction_ = scale_factor_correction;
++  SetZoomLevel(zoom_level_);
++}
++
+ void WebViewImpl::SetPageLifecycleStateFromNewPageCommit(
+     mojom::blink::PageVisibilityState visibility,
+     mojom::blink::PagehideDispatch pagehide_dispatch) {
+diff --git a/third_party/blink/renderer/core/exported/web_view_impl.h b/third_party/blink/renderer/core/exported/web_view_impl.h
+index 043266205142e59f88c4c2f2ae6b58bb009f2d9c..9681cb66529a3f257995c9d7acd53109b48fa0d5 100644
+--- a/third_party/blink/renderer/core/exported/web_view_impl.h
++++ b/third_party/blink/renderer/core/exported/web_view_impl.h
+@@ -190,6 +190,10 @@ class CORE_EXPORT WebViewImpl final : public WebView,
+   float ZoomFactorForDeviceScaleFactor() override {
+     return zoom_factor_for_device_scale_factor_;
+   }
++  void SetScaleFactorCorrection(float) override;
++  float ScaleFactorCorrection() override {
++    return scale_factor_correction_;
++  }
+   bool AutoResizeMode() override;
+   void EnableAutoResizeForTesting(const gfx::Size& min_window_size,
+                                   const gfx::Size& max_window_size) override;
+@@ -787,6 +791,9 @@ class CORE_EXPORT WebViewImpl final : public WebView,
+   // Additional zoom factor used to scale the content by device scale factor.
+   double zoom_factor_for_device_scale_factor_ = 0.;
+ 
++  double device_scale_factor_ = 1.;
++  double scale_factor_correction_ = 1.;
++
+   // This value, when multiplied by the font scale factor, gives the maximum
+   // page scale that can result from automatic zooms.
+   float maximum_legible_scale_ = 1.f;
+diff --git a/third_party/blink/renderer/core/frame/local_frame.cc b/third_party/blink/renderer/core/frame/local_frame.cc
+index bcf072a6d8bc46e5c71d9ef3f248b6af69693ac9..ae25dfa9d7ee4d6038da6b350e2a4f734026631e 100644
+--- a/third_party/blink/renderer/core/frame/local_frame.cc
++++ b/third_party/blink/renderer/core/frame/local_frame.cc
+@@ -73,6 +73,7 @@
+ #include "third_party/blink/public/web/web_content_capture_client.h"
+ #include "third_party/blink/public/web/web_frame.h"
+ #include "third_party/blink/public/web/web_local_frame_client.h"
++#include "third_party/blink/public/web/web_view.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
+ #include "third_party/blink/renderer/bindings/core/v8/source_location.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+@@ -2652,6 +2653,11 @@ void LocalFrame::SetScaleFactor(float scale_factor) {
+   GetPage()->GetVisualViewport().SetScale(scale_factor);
+ }
+ 
++void LocalFrame::SetScaleFactorCorrection(float scale_factor) {
++  auto* web_view = (WebView*)GetPage()->GetChromeClient().GetWebView();
++  web_view->SetScaleFactorCorrection(scale_factor);
++}
++
+ void LocalFrame::ClosePageForTesting() {
+   mojo_handler_->ClosePageForTesting();
+ }
+diff --git a/third_party/blink/renderer/core/frame/local_frame.h b/third_party/blink/renderer/core/frame/local_frame.h
+index 31cb8ddcf64b1c84700569586e4394cd988eeae8..551793f970ea4a09f2923590db997fe8d248df6d 100644
+--- a/third_party/blink/renderer/core/frame/local_frame.h
++++ b/third_party/blink/renderer/core/frame/local_frame.h
+@@ -645,6 +645,7 @@ class CORE_EXPORT LocalFrame final
+       BlinkTransferableMessage message);
+ 
+   void SetScaleFactor(float scale);
++  void SetScaleFactorCorrection(float scale);
+   void ClosePageForTesting();
+   void SetInitialFocus(bool reverse);
+ 
+diff --git a/third_party/blink/renderer/core/frame/local_frame_mojo_handler.cc b/third_party/blink/renderer/core/frame/local_frame_mojo_handler.cc
+index ff9f90cb08abeb4699f48377749d63cdc59109b2..1c554dbdb0517b114d999d32f24a7cf863598f8a 100644
+--- a/third_party/blink/renderer/core/frame/local_frame_mojo_handler.cc
++++ b/third_party/blink/renderer/core/frame/local_frame_mojo_handler.cc
+@@ -1164,6 +1164,10 @@ void LocalFrameMojoHandler::SetScaleFactor(float scale_factor) {
+   frame_->SetScaleFactor(scale_factor);
+ }
+ 
++void LocalFrameMojoHandler::SetScaleFactorCorrection(float scale_factor) {
++  frame_->SetScaleFactorCorrection(scale_factor);
++}
++
+ void LocalFrameMojoHandler::ClosePage(
+     mojom::blink::LocalMainFrame::ClosePageCallback completion_callback) {
+   SECURITY_CHECK(frame_->IsMainFrame());
+diff --git a/third_party/blink/renderer/core/frame/local_frame_mojo_handler.h b/third_party/blink/renderer/core/frame/local_frame_mojo_handler.h
+index 44fce86602740fe122cbde362388e066e1568ed6..64edcd53a087b62c92774efc5847eb7a0b7520e9 100644
+--- a/third_party/blink/renderer/core/frame/local_frame_mojo_handler.h
++++ b/third_party/blink/renderer/core/frame/local_frame_mojo_handler.h
+@@ -199,6 +199,7 @@ class LocalFrameMojoHandler
+   void AnimateDoubleTapZoom(const gfx::Point& point,
+                             const gfx::Rect& rect) override;
+   void SetScaleFactor(float scale) override;
++  void SetScaleFactorCorrection(float scale) override;
+   void ClosePage(
+       mojom::blink::LocalMainFrame::ClosePageCallback callback) override;
+   void PluginActionAt(const gfx::Point& location,
+diff --git a/ui/compositor/compositor.cc b/ui/compositor/compositor.cc
+index 98adeb4c21ef4ceda2e7d3e808e4359387bb425a..63440e2746ffb7e7f5d12f5affb552f15d7ba141 100644
+--- a/ui/compositor/compositor.cc
++++ b/ui/compositor/compositor.cc
+@@ -88,12 +88,14 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
+                        bool enable_pixel_canvas,
+                        bool use_external_begin_frame_control,
+                        bool force_software_compositor,
+-                       bool enable_compositing_based_throttling)
++                       bool enable_compositing_based_throttling,
++                       bool enable_manual_begin_frame_control)
+     : context_factory_(context_factory),
+       frame_sink_id_(frame_sink_id),
+       task_runner_(task_runner),
+       use_external_begin_frame_control_(use_external_begin_frame_control),
+       force_software_compositor_(force_software_compositor),
++      enable_manual_begin_frame_control_(enable_manual_begin_frame_control),
+       layer_animator_collection_(this),
+       is_pixel_canvas_(enable_pixel_canvas),
+       lock_manager_(task_runner) {
+@@ -380,6 +382,12 @@ void Compositor::SetExternalBeginFrameController(
+   }
+ }
+ 
++void Compositor::SetBeginFrameControllerMojo(
++    viz::mojom::BeginFrameControllerMojo* begin_frame_controller_mojo) {
++  DCHECK(enable_manual_begin_frame_control());
++  begin_frame_controller_mojo_ = begin_frame_controller_mojo;
++}
++
+ void Compositor::OnChildResizing() {
+   for (auto& observer : observer_list_)
+     observer.OnCompositingChildResizing(this);
+@@ -603,6 +611,7 @@ gfx::AcceleratedWidget Compositor::ReleaseAcceleratedWidget() {
+   host_->ReleaseLayerTreeFrameSink();
+   display_private_ = nullptr;
+   external_begin_frame_controller_ = nullptr;
++  begin_frame_controller_mojo_ = nullptr;
+   context_factory_->RemoveCompositor(this);
+   context_creation_weak_ptr_factory_.InvalidateWeakPtrs();
+   widget_valid_ = false;
+@@ -674,6 +683,18 @@ void Compositor::IssueExternalBeginFrame(
+       args, force, std::move(callback));
+ }
+ 
++void Compositor::IssueBeginFrame() {
++  if (begin_frame_controller_mojo_) {
++    begin_frame_controller_mojo_->IssueBeginFrame();
++  }
++}
++
++void Compositor::EnableBeginFrames(bool enable) {
++  if (begin_frame_controller_mojo_) {
++    begin_frame_controller_mojo_->EnableBeginFrames(enable);
++  }
++}
++
+ ThroughputTracker Compositor::RequestNewThroughputTracker() {
+   return ThroughputTracker(next_throughput_tracker_id_++,
+                            weak_ptr_factory_.GetWeakPtr());
+diff --git a/ui/compositor/compositor.h b/ui/compositor/compositor.h
+index 6ef04da46c8b097b01d5ee40dcadf222d7a7870c..2bed24a56e2c55d82dd9fd60d29b93aafd40620d 100644
+--- a/ui/compositor/compositor.h
++++ b/ui/compositor/compositor.h
+@@ -79,6 +79,7 @@ namespace viz {
+ namespace mojom {
+ class DisplayPrivate;
+ class ExternalBeginFrameController;
++class BeginFrameControllerMojo;
+ }  // namespace mojom
+ class ContextProvider;
+ class HostDisplayClient;
+@@ -165,7 +166,8 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+              bool enable_pixel_canvas,
+              bool use_external_begin_frame_control = false,
+              bool force_software_compositor = false,
+-             bool enable_compositing_based_throttling = false);
++             bool enable_compositing_based_throttling = false,
++             bool enable_manual_begin_frame_control = false);
+ 
+   Compositor(const Compositor&) = delete;
+   Compositor& operator=(const Compositor&) = delete;
+@@ -181,6 +183,8 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+                              viz::mojom::DisplayPrivate* display_private);
+   void SetExternalBeginFrameController(viz::mojom::ExternalBeginFrameController*
+                                            external_begin_frame_controller);
++  void SetBeginFrameControllerMojo(viz::mojom::BeginFrameControllerMojo*
++                                   begin_frame_controller_mojo);
+ 
+   // Called when a child surface is about to resize.
+   void OnChildResizing();
+@@ -347,6 +351,9 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+       bool force,
+       base::OnceCallback<void(const viz::BeginFrameAck&)> callback);
+ 
++  void IssueBeginFrame();
++  void EnableBeginFrames(bool enable);
++
+   // Creates a ThroughputTracker for tracking this Compositor.
+   ThroughputTracker RequestNewThroughputTracker();
+ 
+@@ -439,6 +446,10 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+     return use_external_begin_frame_control_;
+   }
+ 
++  bool enable_manual_begin_frame_control() const {
++    return enable_manual_begin_frame_control_;
++  }
++
+   void SetAllowLocksToExtendTimeout(bool allowed) {
+     lock_manager_.set_allow_locks_to_extend_timeout(allowed);
+   }
+@@ -478,6 +489,8 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+   raw_ptr<viz::mojom::DisplayPrivate> display_private_ = nullptr;
+   raw_ptr<viz::mojom::ExternalBeginFrameController>
+       external_begin_frame_controller_ = nullptr;
++  raw_ptr<viz::mojom::BeginFrameControllerMojo>
++      begin_frame_controller_mojo_ = nullptr;
+ 
+   std::unique_ptr<PendingBeginFrameArgs> pending_begin_frame_args_;
+ 
+@@ -516,6 +529,7 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+ 
+   const bool use_external_begin_frame_control_;
+   const bool force_software_compositor_;
++  const bool enable_manual_begin_frame_control_;
+ 
+   // The device scale factor of the monitor that this compositor is compositing
+   // layers on.
+diff --git a/ui/gfx/win/rendering_window_manager.cc b/ui/gfx/win/rendering_window_manager.cc
+index f894f7757d96dcaf19d7b079b0fa84539f9eabfb..33b236b3e325dbc8727ddcc3b59c9a050a178b36 100644
+--- a/ui/gfx/win/rendering_window_manager.cc
++++ b/ui/gfx/win/rendering_window_manager.cc
+@@ -19,7 +19,6 @@ RenderingWindowManager* RenderingWindowManager::GetInstance() {
+ }
+ 
+ void RenderingWindowManager::RegisterParent(HWND parent) {
+-  DCHECK(task_runner_->BelongsToCurrentThread());
+   registered_hwnds_.emplace(parent, nullptr);
+ }
+ 
+@@ -28,7 +27,7 @@ void RenderingWindowManager::RegisterChild(HWND parent,
+                                            DWORD expected_child_process_id) {
+   if (!child)
+     return;
+-
++#if 0
+   // This can be called from any thread, if we're not on the correct thread then
+   // PostTask back to the UI thread before doing anything.
+   if (!task_runner_->BelongsToCurrentThread()) {
+@@ -38,7 +37,7 @@ void RenderingWindowManager::RegisterChild(HWND parent,
+                                   expected_child_process_id));
+     return;
+   }
+-
++#endif
+   // Check that |parent| was registered as a HWND that could have a child HWND.
+   auto it = registered_hwnds_.find(parent);
+   if (it == registered_hwnds_.end())
+@@ -60,12 +59,10 @@ void RenderingWindowManager::RegisterChild(HWND parent,
+ }
+ 
+ void RenderingWindowManager::UnregisterParent(HWND parent) {
+-  DCHECK(task_runner_->BelongsToCurrentThread());
+   registered_hwnds_.erase(parent);
+ }
+ 
+ bool RenderingWindowManager::HasValidChildWindow(HWND parent) {
+-  DCHECK(task_runner_->BelongsToCurrentThread());
+   auto it = registered_hwnds_.find(parent);
+   if (it == registered_hwnds_.end())
+     return false;

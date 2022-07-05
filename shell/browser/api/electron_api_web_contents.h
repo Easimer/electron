@@ -43,6 +43,7 @@
 #include "shell/common/gin_helper/constructible.h"
 #include "shell/common/gin_helper/error_thrower.h"
 #include "shell/common/gin_helper/pinnable.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/models/image_model.h"
 #include "ui/gfx/image/image.h"
 
@@ -95,6 +96,8 @@ class OffScreenWebContentsView;
 
 namespace api {
 
+class OffscreenWindow;
+
 using DevicePermissionMap = std::map<
     int,
     std::map<content::PermissionType,
@@ -120,6 +123,29 @@ class WebContents : public ExclusiveAccessContext,
     kWebView,         // Used by <webview>.
     kOffScreen,       // Used for offscreen rendering
   };
+
+  class PaintObserver : public base::CheckedObserver {
+   public:
+    virtual void OnPaint(const gfx::Rect& dirty_rect,
+                         const SkBitmap& bitmap) = 0;
+    virtual void OnTexturePaint(const ::gpu::Mailbox& mailbox,
+                                const ::gpu::SyncToken& sync_token,
+                                const gfx::Rect& content_rect,
+                                bool is_popup,
+                                void (*callback)(void*, void*),
+                                void* context) = 0;
+
+   protected:
+    ~PaintObserver() override {}
+  };
+
+  void AddPaintObserver(PaintObserver* obs) {
+    paint_observers_.AddObserver(obs);
+  }
+  void RemovePaintObserver(PaintObserver* obs) {
+    // Trying to remove from an empty collection leads to an access violation
+    paint_observers_.RemoveObserver(obs);
+  }
 
   // Create a new WebContents and return the V8 wrapper of it.
   static gin::Handle<WebContents> New(v8::Isolate* isolate,
@@ -284,13 +310,24 @@ class WebContents : public ExclusiveAccessContext,
   bool IsOffScreen() const;
 #if BUILDFLAG(ENABLE_OSR)
   void OnPaint(const gfx::Rect& dirty_rect, const SkBitmap& bitmap);
+  void OnTexturePaint(const gpu::Mailbox& mailbox,
+                      const gpu::SyncToken& sync_token,
+                      const gfx::Rect& content_rect,
+                      const gfx::Rect& damage_rect,
+                      bool is_popup,
+                      void (*callback)(void*, void*),
+                      void* context);
   void StartPainting();
   void StopPainting();
   bool IsPainting() const;
   void SetFrameRate(int frame_rate);
   int GetFrameRate() const;
+  void SetScaleFactor(float scale_factor);
+  float GetScaleFactor() const;
+  void SetOffscreenWindow(api::OffscreenWindow* offscreen_window);
 #endif
   void Invalidate();
+  void InvalidateRect(gfx::Rect const& rect);
   gfx::Size GetSizeForNewRenderView(content::WebContents*) override;
 
   // Methods for zoom handling.
@@ -298,6 +335,8 @@ class WebContents : public ExclusiveAccessContext,
   double GetZoomLevel() const;
   void SetZoomFactor(gin_helper::ErrorThrower thrower, double factor);
   double GetZoomFactor() const;
+
+  void SetPageScale(double scale);
 
   // Callback triggered on permission response.
   void OnEnterFullscreenModeForTab(
@@ -375,6 +414,13 @@ class WebContents : public ExclusiveAccessContext,
     return script_executor_.get();
   }
 #endif
+
+  void StartDragging(const content::DropData& drop_data,
+                     blink::DragOperationsMask ops,
+                     gfx::ImageSkia drag_image,
+                     gfx::Vector2d const& offset);
+  void MakeDragImageMailbox(gfx::Point const& position);
+  void DestroyDragImageMailbox(bool force_destruct);
 
   // Set the window as owner window.
   void SetOwnerWindow(NativeWindow* owner_window);
@@ -825,6 +871,22 @@ class WebContents : public ExclusiveAccessContext,
 #if BUILDFLAG(ENABLE_PRINTING)
   scoped_refptr<base::TaskRunner> print_task_runner_;
 #endif
+
+  base::ObserverList<PaintObserver> paint_observers_;
+
+  bool start_dragging_ = false;
+  bool dragging_ = false;
+  bool drag_ended_ = false;
+  content::DropData drop_data_;
+  gfx::ImageSkia drag_image_;
+  blink::DragOperationsMask drag_ops_ = blink::kDragOperationNone;
+  absl::optional<gpu::Mailbox> drag_image_mailbox_;
+  absl::optional<gpu::SyncToken> drag_image_sync_token_;
+  absl::optional<gpu::Mailbox> drag_image_mailbox_destroying_;
+  absl::optional<gpu::SyncToken> drag_image_sync_token_destroying_;
+  gfx::Vector2d drag_offset_;
+  gfx::Vector2d drag_correction_;
+  gfx::Rect drag_image_content_rect_;
 
   // Stores the frame thats currently in fullscreen, nullptr if there is none.
   content::RenderFrameHost* fullscreen_frame_ = nullptr;
