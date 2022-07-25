@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Mon, 25 Jul 2022 22:33:01 +0200
+Subject: loader: re-add globalPaths support
+
+This patch re-adds the removed globalPaths variable.
+
+diff --git a/lib/internal/modules/cjs/loader.js b/lib/internal/modules/cjs/loader.js
+index 37f395e9f2b7ab9ce99b0f8f4217253fcbd9175b..f385cb71b49c09b38f78255f5c1812a20a23b2d3 100644
+--- a/lib/internal/modules/cjs/loader.js
++++ b/lib/internal/modules/cjs/loader.js
+@@ -629,7 +629,7 @@ if (isWindows) {
+       }
+     }
+ 
+-    return paths;
++    return paths.concat(Module.globalPaths);
+   };
+ } else { // posix
+   // 'from' is the __dirname of the module.
+@@ -667,7 +667,7 @@ if (isWindows) {
+     // Append /node_modules to handle root paths.
+     ArrayPrototypePush(paths, '/node_modules');
+ 
+-    return paths;
++    return paths.concat(Module.globalPaths);
+   };
+ }
+ 
+@@ -684,7 +684,7 @@ Module._resolveLookupPaths = function(request, parent) {
+       StringPrototypeCharAt(request, 1) !== '/' &&
+       (!isWindows || StringPrototypeCharAt(request, 1) !== '\\'))) {
+ 
+-    let paths = modulePaths;
++    let paths = modulePaths.concat(Module.globalPaths);
+     if (parent?.paths?.length) {
+       paths = ArrayPrototypeConcat(parent.paths, paths);
+     }
