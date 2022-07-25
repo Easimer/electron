@@ -606,6 +606,9 @@ OffScreenRenderWidgetHostView::GetNewScreenInfosForUpdate() {
       display::mojom::ScreenOrientation::kLandscapePrimary;
   screen_infos.mutable_current().rect = gfx::Rect(size_);
   screen_infos.mutable_current().available_rect = gfx::Rect(size_);
+  if (!IsPopupWidget()) {
+    screen_infos.mutable_current().device_scale_factor = GetScaleFactor();
+  }
 
   return screen_infos;
 }

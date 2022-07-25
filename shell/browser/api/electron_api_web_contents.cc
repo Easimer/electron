@@ -25,6 +25,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
+#include "cc/paint/skia_paint_canvas.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/views/eye_dropper/eye_dropper.h"
@@ -142,6 +143,7 @@
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/display/screen.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/gfx/canvas.h"
 
 #if BUILDFLAG(ENABLE_OSR)
 #include "shell/browser/osr/osr_render_widget_host_view.h"
@@ -4310,7 +4312,8 @@ void WebContents::StartDragging(
   drop_data_ = drop_data;
   source->FilterDropData(&drop_data_);
   drag_ops_ = ops;
-  gfx::Size scaled_size(drag_image.width(), drag_image.height());
+  auto& rep = drag_image.GetRepresentation(GetScaleFactor());
+  gfx::Size scaled_size(rep.pixel_width(), rep.pixel_height());
   drag_image_content_rect_ = gfx::Rect(gfx::Point(), scaled_size);
   drag_offset_ = offset;
   drag_image_ = drag_image;
@@ -4320,8 +4323,8 @@ void WebContents::MakeDragImageMailbox(gfx::Point const& position) {
   float dx = 0, dy = 0;
   auto screen_size = GetOffScreenRenderWidgetHostView()->SizeInPixels();
 
-  auto max_x = screen_size.width() - 1;
-  auto max_y = screen_size.height() - 1;
+  auto max_x = screen_size.width() - drag_image_content_rect_.width() -  1;
+  auto max_y = screen_size.height() - drag_image_content_rect_.height() -  1;
 
   if(position.x() < 0)
       dx = -position.x();
@@ -4350,20 +4353,33 @@ void WebContents::MakeDragImageMailbox(gfx::Point const& position) {
   auto* sii = context_provider->SharedImageInterface();
 
   auto& rep = drag_image_.GetRepresentation(GetScaleFactor());
-  auto* bitmap = &rep.GetBitmap();
-  if (!bitmap) {
-    return;
-  }
 
-  void* pixel_data = bitmap->getPixels();
-  auto pixel_size = bitmap->computeByteSize();
+  SkBitmap drag_bitmap;
+  drag_bitmap.allocN32Pixels(rep.pixel_width(), rep.pixel_height(), false);
+  cc::SkiaPaintCanvas paint_canvas(drag_bitmap);
+  gfx::Canvas canvas(&paint_canvas, GetScaleFactor());
+
+  auto transform = gfx::Transform(
+    1, 0, 0, 0,
+    0, -1, 0, rep.pixel_height(),
+    0, 0, 1, 0,
+    0, 0, 0, 1
+  );
+  transform.Scale(GetScaleFactor(), GetScaleFactor());
+
+  canvas.Transform(transform);
+  canvas.DrawImageInt(drag_image_, 0, 0);
+
+  void* pixel_data = drag_bitmap.getPixels();
+  auto pixel_size = drag_bitmap.computeByteSize();
 
   if (pixel_size == 0) {
     return;
   }
+
   base::span<const uint8_t> pixels =
       base::make_span(reinterpret_cast<const uint8_t*>(pixel_data), pixel_size);
-  auto size = gfx::Size(bitmap->width(), bitmap->height());
+  auto size = gfx::Size(drag_bitmap.width(), drag_bitmap.height());
 
   constexpr uint32_t kUsage = gpu::SHARED_IMAGE_USAGE_GLES2 |
                               gpu::SHARED_IMAGE_USAGE_GLES2_FRAMEBUFFER_HINT |
