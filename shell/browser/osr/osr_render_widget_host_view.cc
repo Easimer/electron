@@ -1009,15 +1009,21 @@ void OffScreenRenderWidgetHostView::OnBackingTextureCreated(
   ForceRenderFrames(20, TimeDeltaFromHz(5));
 }
 
-void OffScreenRenderWidgetHostView::ForceRenderFrames(
-    int n, base::TimeDelta delay) {
-  if (n-- > 0) {
-    Invalidate();
+void DoForceRenderFrames(
+    base::WeakPtr<OffScreenRenderWidgetHostView> view,
+    int n,
+    base::TimeDelta delay) {
+  if (n-- > 0 && view) {
+    view->Invalidate();
     base::PostDelayedTask(
         FROM_HERE, {content::BrowserThread::UI},
-        base::BindOnce(&OffScreenRenderWidgetHostView::ForceRenderFrames,
-                       weak_ptr_factory_.GetWeakPtr(), n, delay), delay);
+        base::BindOnce(&DoForceRenderFrames, view, n, delay), delay);
   }
+}
+
+void OffScreenRenderWidgetHostView::ForceRenderFrames(
+    int n, base::TimeDelta delay) {
+  DoForceRenderFrames(weak_ptr_factory_.GetWeakPtr(), n, delay);
 }
 
 void OffScreenRenderWidgetHostView::OnPopupPaint(const gfx::Rect& damage_rect) {
@@ -1093,6 +1099,8 @@ void OffScreenRenderWidgetHostView::CancelWidget() {
     }
     parent_host_view_ = nullptr;
   }
+
+  weak_ptr_factory_.InvalidateWeakPtrs();
 
   if (render_widget_host_ && !is_destroyed_) {
     is_destroyed_ = true;
