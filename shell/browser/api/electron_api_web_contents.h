@@ -17,6 +17,7 @@
 #include "chrome/browser/devtools/devtools_eye_dropper.h"
 #include "chrome/browser/devtools/devtools_file_system_indexer.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"  // nogncheck
+#include "content/browser/renderer_host/render_widget_host_impl.h"  // nogncheck
 #include "content/common/cursors/webcursor.h"
 #include "content/common/frame.mojom.h"
 #include "content/public/browser/devtools_agent_host.h"
@@ -122,6 +123,13 @@ class WebContents : public ExclusiveAccessContext,
     kRemote,          // Thin wrap around an existing WebContents.
     kWebView,         // Used by <webview>.
     kOffScreen,       // Used for offscreen rendering
+  };
+
+  enum class DragOperation {
+    kDragOperationNone,
+    kDragOperationEnter,
+    kDragOperationDrag,
+    kDragOperationDrop,
   };
 
   class PaintObserver : public base::CheckedObserver {
@@ -286,6 +294,13 @@ class WebContents : public ExclusiveAccessContext,
   void Focus();
   bool IsFocused() const;
 
+  void OnWidgetForDragEvent(
+      blink::WebMouseEvent mouse_event,
+      DragOperation operation,
+      base::WeakPtr<content::RenderWidgetHostViewBase> target,
+      absl::optional<gfx::PointF> maybe_point);
+  void OnDropEnded();
+
   // Send WebInputEvent to the page.
   void SendInputEvent(v8::Isolate* isolate, v8::Local<v8::Value> input_event);
 
@@ -418,7 +433,8 @@ class WebContents : public ExclusiveAccessContext,
   void StartDragging(const content::DropData& drop_data,
                      blink::DragOperationsMask ops,
                      gfx::ImageSkia drag_image,
-                     gfx::Vector2d const& offset);
+                     gfx::Vector2d const& offset,
+                     content::RenderWidgetHostImpl* source);
   void MakeDragImageMailbox(gfx::Point const& position);
   void DestroyDragImageMailbox(bool force_destruct);
 
@@ -880,6 +896,7 @@ class WebContents : public ExclusiveAccessContext,
   content::DropData drop_data_;
   gfx::ImageSkia drag_image_;
   blink::DragOperationsMask drag_ops_ = blink::kDragOperationNone;
+  base::WeakPtr<content::RenderWidgetHostImpl> current_rwh_for_drag_;
   absl::optional<gpu::Mailbox> drag_image_mailbox_;
   absl::optional<gpu::SyncToken> drag_image_sync_token_;
   absl::optional<gpu::Mailbox> drag_image_mailbox_destroying_;
@@ -887,6 +904,7 @@ class WebContents : public ExclusiveAccessContext,
   gfx::Vector2d drag_offset_;
   gfx::Vector2d drag_correction_;
   gfx::Rect drag_image_content_rect_;
+  float scale_factor_correction_ = 1.0;
 
   // Stores the frame thats currently in fullscreen, nullptr if there is none.
   content::RenderFrameHost* fullscreen_frame_ = nullptr;

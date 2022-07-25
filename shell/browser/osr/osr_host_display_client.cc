@@ -84,10 +84,12 @@ void LayeredWindowUpdater::Draw(const gfx::Rect& damage_rect,
 OffScreenHostDisplayClient::OffScreenHostDisplayClient(
     gfx::AcceleratedWidget widget,
     OnPaintCallback callback,
-    OnTexturePaintCallbackInternal texture_callback)
+    OnTexturePaintCallbackInternal texture_callback,
+    OnBackingTextureCreatedInternal backing_callback)
     : viz::HostDisplayClient(widget),
       callback_(callback),
-      texture_callback_(texture_callback) {}
+      texture_callback_(texture_callback),
+      backing_callback_(backing_callback) {}
 OffScreenHostDisplayClient::~OffScreenHostDisplayClient() = default;
 
 void OffScreenHostDisplayClient::SetActive(bool active) {
@@ -104,6 +106,7 @@ void OffScreenHostDisplayClient::IsOffscreen(IsOffscreenCallback callback) {
 void OffScreenHostDisplayClient::BackingTextureCreated(
     const gpu::Mailbox& mailbox) {
   mailbox_ = mailbox;
+  backing_callback_.Run(mailbox_);
 }
 
 void OffScreenHostDisplayClient::OnSwapBuffers(

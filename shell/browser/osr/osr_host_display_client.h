@@ -27,6 +27,8 @@ typedef base::RepeatingCallback<void(const gpu::Mailbox&,
                                      void (*)(void*, void*),
                                      void*)>
     OnTexturePaintCallbackInternal;
+typedef base::RepeatingCallback<void(const gpu::Mailbox&)>
+    OnBackingTextureCreatedInternal;
 
 class LayeredWindowUpdater : public viz::mojom::LayeredWindowUpdater {
  public:
@@ -61,7 +63,8 @@ class OffScreenHostDisplayClient : public viz::HostDisplayClient {
  public:
    OffScreenHostDisplayClient(gfx::AcceleratedWidget widget,
                               OnPaintCallback callback,
-                              OnTexturePaintCallbackInternal texture_callback);
+                              OnTexturePaintCallbackInternal texture_callback,
+                              OnBackingTextureCreatedInternal backing_callback);
   ~OffScreenHostDisplayClient() override;
 
   // disable copy
@@ -97,6 +100,7 @@ class OffScreenHostDisplayClient : public viz::HostDisplayClient {
   std::unique_ptr<LayeredWindowUpdater> layered_window_updater_;
   OnPaintCallback callback_;
   OnTexturePaintCallbackInternal texture_callback_;
+  OnBackingTextureCreatedInternal backing_callback_;
   bool active_ = false;
   gfx::Rect texture_rect_;
   gpu::Mailbox mailbox_;

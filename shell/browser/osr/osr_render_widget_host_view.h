@@ -171,7 +171,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
       base::OnceCallback<void(const SkBitmap&)> callback) override;
-  display::ScreenInfo GetScreenInfo() const override;
+  display::ScreenInfos GetNewScreenInfosForUpdate() override;
   void TransformPointToRootSurface(gfx::PointF* point) override;
   gfx::Rect GetBoundsInRootWindow() override;
 #if !defined(OS_MAC)
@@ -204,7 +204,6 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   void SynchronizeVisualProperties(
       const cc::DeadlinePolicy& deadline_policy,
       const absl::optional<viz::LocalSurfaceId>& child_local_surface_id);
-  void BufferPresented(const gfx::PresentationFeedback& feedback);
   void Invalidate();
   void InvalidateRect(gfx::Rect const& rect);
   gfx::Size SizeInPixels();
@@ -226,6 +225,8 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
                       const gfx::Rect& damage_rect,
                       void (*callback)(void*, void*),
                       void* context);
+  void OnBackingTextureCreated(const gpu::Mailbox& mailbox);
+  void ForceRenderFrames(int n, base::TimeDelta delay);
   void OnPopupPaint(const gfx::Rect& damage_rect);
   void OnProxyViewPaint(const gfx::Rect& damage_rect) override;
   void CompositeFrame(const gfx::Rect& damage_rect);

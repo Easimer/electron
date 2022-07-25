@@ -6,6 +6,7 @@
 
 #include <GLES2/gl2extchromium.h>
 
+#include "base/trace_event/trace_log.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/gpu_utils.h"
 #include "content/public/common/gpu_stream_constants.h"
@@ -125,10 +126,6 @@ bool Context::MakeCurrent(Context* current_context,
                           Surface* current_surface,
                           Context* new_context,
                           Surface* new_surface) {
-  if (!base::ThreadTaskRunnerHandle::IsSet()) {
-    LOG(INFO) << "!base::ThreadTaskRunnerHandle::IsSet()" << '\n';
-  }
-
   if (!new_context && !current_context) {
     return true;
   }
@@ -142,6 +139,8 @@ bool Context::MakeCurrent(Context* current_context,
         return false;
       if (new_context != current_context || new_surface != current_surface) {
         Context::ApplyContextReleased();
+        // if (current_context->lock_ != nullptr)
+        //   current_context->lock_->Release();
         new_context->ApplyCurrentContext(new_surface);
       }
     } else {
@@ -149,6 +148,8 @@ bool Context::MakeCurrent(Context* current_context,
         return false;
       } else {
         Context::ApplyContextReleased();
+        // if (current_context->lock_ != nullptr)
+        //   current_context->lock_->Release();
         new_context->ApplyCurrentContext(new_surface);
       }
     }
@@ -251,6 +252,8 @@ bool Context::ConnectToService(Surface* surface) {
   gpu::ContextResult bind_result = context_provider_->BindToCurrentThread();
   // TODO: we could handle transient failures and retry
   if (bind_result == gpu::ContextResult::kSuccess) {
+    base::trace_event::TraceLog::GetInstance()->SetCurrentThreadBlocksMessageLoop();
+
     const auto& context_capabilities = context_provider_->ContextCapabilities();
     should_set_draw_rectangle_ = context_capabilities.dc_layers;
 

@@ -9,6 +9,7 @@
 
 #include <EGL/egl.h>
 
+#include "base/synchronization/lock.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/swap_buffers_complete_params.h"
 #include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
@@ -90,6 +91,8 @@ class Context : public base::RefCountedThreadSafe<Context> {
   bool is_current_in_some_thread_;
   bool is_destroyed_;
   bool should_set_draw_rectangle_;
+
+  // base::Lock* lock_ = nullptr;
 
 #if BUILDFLAG(IS_MAC)
   OverlaySurface* overlay_surface_;

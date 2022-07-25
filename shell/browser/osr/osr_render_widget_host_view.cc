@@ -291,9 +291,15 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
 
   if (!parent_host_view_) {
     SetRootLayerSize(false);
-    if (!render_widget_host_->is_hidden())
+    if (!render_widget_host_->is_hidden()) {
       Show();
+    }
+
+    SynchronizeVisualProperties(cc::DeadlinePolicy::UseExistingDeadline(),
+                                absl::nullopt);
   }
+
+  UpdateScreenInfo();
 }
 
 OffScreenRenderWidgetHostView::~OffScreenRenderWidgetHostView() {
@@ -325,12 +331,26 @@ void OffScreenRenderWidgetHostView::InitAsChild(gfx::NativeView) {
 }
 
 void OffScreenRenderWidgetHostView::SetSize(const gfx::Size& size) {
-  size_ = size;
-  WasResized();
+  if (IsPopupWidget()) {
+    popup_position_.set_size(size);
+
+    SynchronizeVisualProperties(cc::DeadlinePolicy::UseExistingDeadline(),
+                                absl::nullopt);
+  } else {
+    size_ = size;
+    WasResized();
+  }
 }
 
 void OffScreenRenderWidgetHostView::SetBounds(const gfx::Rect& new_bounds) {
-  SetSize(new_bounds.size());
+  if (IsPopupWidget()) {
+    popup_position_ = new_bounds;
+
+    SynchronizeVisualProperties(cc::DeadlinePolicy::UseExistingDeadline(),
+                                absl::nullopt);
+  } else {
+    SetSize(new_bounds.size());
+  }
 }
 
 gfx::NativeView OffScreenRenderWidgetHostView::GetNativeView() {
@@ -407,10 +427,11 @@ void OffScreenRenderWidgetHostView::EnsureSurfaceSynchronizedForWebTest() {
 }
 
 gfx::Rect OffScreenRenderWidgetHostView::GetViewBounds() {
-  if (IsPopupWidget())
+  if (IsPopupWidget()) {
     return popup_position_;
+  }
 
-  return gfx::Rect(size_);
+  return gfx::Rect(SizeInPixels());
 }
 
 void OffScreenRenderWidgetHostView::SetBackgroundColor(SkColor color) {
@@ -487,13 +508,12 @@ void OffScreenRenderWidgetHostView::InitAsPopup(
   parent_texture_callback_ =
         base::BindRepeating(&OffScreenRenderWidgetHostView::OnPopupTexturePaint,
                             parent_host_view_->weak_ptr_factory_.GetWeakPtr());
-  popup_position_ = pos;
 
-  SetRootLayerSize(true);
-  if (video_consumer_) {
-    video_consumer_->SizeChanged();
-  }
+  SetBounds(pos);
+
   Show();
+  SetPainting(true);
+  Invalidate();
 }
 
 void OffScreenRenderWidgetHostView::UpdateCursor(const content::WebCursor&) {}
@@ -571,23 +591,33 @@ void OffScreenRenderWidgetHostView::CopyFromSurface(
                                                         std::move(callback));
 }
 
-display::ScreenInfo OffScreenRenderWidgetHostView::GetScreenInfo() const {
-  display::ScreenInfo screen_info;
-  screen_info.depth = 24;
-  screen_info.depth_per_component = 8;
-  screen_info.orientation_angle = 0;
-  screen_info.device_scale_factor = GetDeviceScaleFactor();
-  screen_info.orientation_type =
+display::ScreenInfos
+OffScreenRenderWidgetHostView::GetNewScreenInfosForUpdate() {
+  display::ScreenInfos screen_infos;
+  screen_infos.screen_infos =
+      std::vector<display::ScreenInfo>({ display::ScreenInfo() });
+
+  screen_infos.current_display_id = display::kDefaultDisplayId;
+
+  screen_infos.mutable_current().depth = 24;
+  screen_infos.mutable_current().depth_per_component = 8;
+  screen_infos.mutable_current().orientation_angle = 0;
+  screen_infos.mutable_current().orientation_type =
       display::mojom::ScreenOrientation::kLandscapePrimary;
-  screen_info.rect = gfx::Rect(size_);
-  screen_info.available_rect = gfx::Rect(size_);
-  return screen_info;
+  screen_infos.mutable_current().rect = gfx::Rect(size_);
+  screen_infos.mutable_current().available_rect = gfx::Rect(size_);
+
+  return screen_infos;
 }
 
 void OffScreenRenderWidgetHostView::TransformPointToRootSurface(
     gfx::PointF* point) {}
 
 gfx::Rect OffScreenRenderWidgetHostView::GetBoundsInRootWindow() {
+  if (IsPopupWidget()) {
+    return popup_position_;
+  }
+
   return gfx::Rect(size_);
 }
 
@@ -689,6 +719,8 @@ OffScreenRenderWidgetHostView::CreateHostDisplayClient(
       base::BindRepeating(&OffScreenRenderWidgetHostView::OnPaint,
                           weak_ptr_factory_.GetWeakPtr()),
       base::BindRepeating(&OffScreenRenderWidgetHostView::OnTexturePaint,
+                          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(&OffScreenRenderWidgetHostView::OnBackingTextureCreated,
                           weak_ptr_factory_.GetWeakPtr()));
   host_display_client_->SetActive(IsPainting());
   return base::WrapUnique(host_display_client_);
@@ -727,11 +759,6 @@ void OffScreenRenderWidgetHostView::WasResized() {
 
   SynchronizeVisualProperties(cc::DeadlinePolicy::UseExistingDeadline(),
                               absl::nullopt);
-
-  force_render_n_frames_ = frame_rate_ * 2;
-  GetCompositor()->RequestPresentationTimeForNextFrame(
-      base::BindOnce(&OffScreenRenderWidgetHostView::BufferPresented,
-                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void OffScreenRenderWidgetHostView::SynchronizeVisualProperties(
@@ -769,19 +796,6 @@ void OffScreenRenderWidgetHostView::SynchronizeVisualProperties(
   }
 }
 
-void OffScreenRenderWidgetHostView::BufferPresented(
-    const gfx::PresentationFeedback& feedback){
-  if (force_render_n_frames_ > 0) {
-    force_render_n_frames_--;
-    GetCompositor()->RequestPresentationTimeForNextFrame(
-        base::BindOnce(&OffScreenRenderWidgetHostView::BufferPresented,
-                       weak_ptr_factory_.GetWeakPtr()));
-    GetCompositor()->ScheduleFullRedraw();
-  } else {
-    Invalidate();
-  }
-}
-
 void OffScreenRenderWidgetHostView::Invalidate() {
   GetCompositor()->ScheduleFullRedraw();
   compositor_->IssueBeginFrame();
@@ -797,7 +811,7 @@ gfx::Size OffScreenRenderWidgetHostView::SizeInPixels() {
     return gfx::ScaleToCeiledSize(popup_position_.size(),
                                   current_device_scale_factor_);
   } else {
-    return gfx::ScaleToCeiledSize(GetViewBounds().size(),
+    return gfx::ScaleToCeiledSize(size_,
                                   current_device_scale_factor_);
   }
 }
@@ -963,6 +977,7 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
     void (*callback)(void*, void*),
     void* context) {
   if (!painting_) {
+    callback(context, new gpu::SyncToken());
     return;
   }
 
@@ -971,12 +986,9 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
                           std::move(content_rect), std::move(damage_rect),
                           false, callback, context);
   } else if (parent_texture_callback_) {
-    gfx::Rect rect_in_pixels = gfx::ToEnclosingRect(
-        ConvertRectToPixels(popup_position_, GetScaleFactor()));
-
     parent_texture_callback_.Run(
         std::move(mailbox), std::move(sync_token),
-        gfx::Rect(rect_in_pixels.origin(), content_rect.size()),
+        gfx::Rect(popup_position_.origin(), content_rect.size()),
         std::move(damage_rect), callback, context);
   }
 
@@ -986,6 +998,22 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
 
       ReleaseResizeHold();
     }
+  }
+}
+
+void OffScreenRenderWidgetHostView::OnBackingTextureCreated(
+    const gpu::Mailbox& mailbox) {
+  ForceRenderFrames(20, TimeDeltaFromHz(5));
+}
+
+void OffScreenRenderWidgetHostView::ForceRenderFrames(
+    int n, base::TimeDelta delay) {
+  if (n-- > 0) {
+    Invalidate();
+    base::PostDelayedTask(
+        FROM_HERE, {content::BrowserThread::UI},
+        base::BindOnce(&OffScreenRenderWidgetHostView::ForceRenderFrames,
+                       weak_ptr_factory_.GetWeakPtr(), n, delay), delay);
   }
 }
 
@@ -1018,13 +1046,10 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
       canvas.writePixels(GetBacking(), 0, 0);
 
       if (popup_host_view_ && !popup_host_view_->GetBacking().drawsNothing()) {
-        gfx::Rect rect_in_pixels =
-            gfx::ToEnclosingRect(ConvertRectToPixels(
-                popup_host_view_->popup_position_, GetScaleFactor()));
-        damage_rect_union.Union(rect_in_pixels);
+        damage_rect_union.Union(popup_position_);
         canvas.writePixels(popup_host_view_->GetBacking(),
-                           rect_in_pixels.origin().x(),
-                           rect_in_pixels.origin().y());
+                           popup_position_.origin().x(),
+                           popup_position_.origin().y());
       }
 
       for (auto* proxy_view : proxy_views_) {
@@ -1177,7 +1202,7 @@ ui::Layer* OffScreenRenderWidgetHostView::GetRootLayer() const {
 }
 
 gfx::Size OffScreenRenderWidgetHostView::GetRootLayerPixelSize() const {
-  return gfx::ScaleToCeiledSize(GetRootLayer()->size(), GetScaleFactor());
+  return GetRootLayer()->size();
 }
 
 const viz::LocalSurfaceId& OffScreenRenderWidgetHostView::GetLocalSurfaceId()
@@ -1213,7 +1238,6 @@ bool OffScreenRenderWidgetHostView::SetRootLayerSize(bool force) {
   const bool scale_factor_changed = (scaleFactor != GetScaleFactor());
   const bool view_bounds_changed = (size != GetRootLayer()->bounds().size());
 
-
   if (!force && !scale_factor_changed && !view_bounds_changed) {
     return false;
   }
@@ -1223,7 +1247,7 @@ bool OffScreenRenderWidgetHostView::SetRootLayerSize(bool force) {
   if (compositor_) {
     compositor_local_surface_id_allocator_.GenerateId();
     compositor_->SetScaleAndSize(
-        current_device_scale_factor_, SizeInPixels(),
+        1.0, GetViewBounds().size(),
         compositor_local_surface_id_allocator_.GetCurrentLocalSurfaceId());
   }
 

@@ -105,7 +105,7 @@ class OffScreenWebContentsView
   const bool transparent_;
   float scale_factor_;
   bool painting_ = true;
-  int frame_rate_ = 120;
+  int frame_rate_ = 144;
   OnPaintCallback callback_;
   OnTexturePaintCallback texture_callback_;
 

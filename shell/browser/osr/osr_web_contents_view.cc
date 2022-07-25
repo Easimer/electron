@@ -132,14 +132,14 @@ OffScreenWebContentsView::CreateViewForChildWidget(
   auto* web_contents_impl =
       static_cast<content::WebContentsImpl*>(web_contents_);
 
-  auto* view = static_cast<OffScreenRenderWidgetHostView*>(
+  auto* parent = static_cast<OffScreenRenderWidgetHostView*>(
       web_contents_impl->GetOuterWebContents()
           ? web_contents_impl->GetOuterWebContents()->GetRenderWidgetHostView()
           : web_contents_impl->GetRenderWidgetHostView());
 
-  return new OffScreenRenderWidgetHostView(this, render_widget_host, view,
-                                           painting_, view->GetFrameRate(),
-                                           scale_factor_);
+  return new OffScreenRenderWidgetHostView(
+      this, render_widget_host, parent, painting_,
+      parent->GetFrameRate(), scale_factor_);
 }
 
 void OffScreenWebContentsView::SetPageTitle(const std::u16string& title) {}
@@ -179,12 +179,9 @@ void OffScreenWebContentsView::StartDragging(
         static_cast<electron::api::WebContents*>(web_contents_->GetDelegate());
     if (contents_delegate) {
       contents_delegate->StartDragging(drop_data, allowed_ops, image,
-                                       image_offset);
+                                       image_offset, source_rwh);
       return;
     }
-  } else {
-    static_cast<content::WebContentsImpl*>(web_contents_)
-        ->SystemDragEnded(source_rwh);
   }
 }
 

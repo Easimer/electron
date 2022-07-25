@@ -36,8 +36,8 @@
 #include "content/browser/renderer_host/frame_tree_node.h"  // nogncheck
 #include "content/browser/renderer_host/render_frame_host_impl.h"  // nogncheck
 #include "content/browser/renderer_host/render_frame_host_manager.h"  // nogncheck
-#include "content/browser/renderer_host/render_widget_host_impl.h"  // nogncheck
 #include "content/browser/renderer_host/render_widget_host_view_base.h"  // nogncheck
+#include "content/browser/renderer_host/render_widget_host_input_event_router.h"  // nogncheck
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/context_factory.h"
 #include "content/public/browser/context_menu_params.h"
@@ -2971,6 +2971,107 @@ bool WebContents::IsFocused() const {
 }
 #endif
 
+void WebContents::OnWidgetForDragEvent(
+    blink::WebMouseEvent mouse_event,
+    DragOperation operation,
+    base::WeakPtr<content::RenderWidgetHostViewBase> target,
+    absl::optional<gfx::PointF> maybe_point) {
+  auto point = *maybe_point;
+  content::RenderWidgetHostImpl* widget_host =
+      content::RenderWidgetHostImpl::From(target->GetRenderWidgetHost());
+
+  switch (operation) {
+    case DragOperation::kDragOperationEnter: {
+      current_rwh_for_drag_ = widget_host->GetWeakPtr();
+
+      widget_host->DragTargetDragEnter(drop_data_, point, point,
+          drag_ops_, mouse_event.GetModifiers(),
+          base::BindOnce([](::ui::mojom::DragOperation) {}));
+      dragging_ = true;
+      break;
+    }
+    case DragOperation::kDragOperationDrag: {
+      if (current_rwh_for_drag_.get() != widget_host) {
+        if (current_rwh_for_drag_) {
+          current_rwh_for_drag_->DragTargetDragLeave(
+              gfx::PointF(0.0f, 0.0f), point);
+        }
+
+        current_rwh_for_drag_ = widget_host->GetWeakPtr();
+
+        widget_host->DragTargetDragEnter(drop_data_, point, point,
+            drag_ops_, mouse_event.GetModifiers(),
+            base::BindOnce([](::ui::mojom::DragOperation) {}));
+      }
+
+      widget_host->DragTargetDragOver(point, point, drag_ops_,
+          mouse_event.GetModifiers(),
+          base::BindOnce([](::ui::mojom::DragOperation) {}));
+
+      auto old_content_rect = drag_image_content_rect_;
+
+      // We force the effective scale factor to be 1.0 to work around
+      // the blurriness @brenca
+      auto scale_factor = 1.0f;
+      auto cursor_pos_i = gfx::Point(point.x(), point.y());
+      auto drag_image_top_left_corner = (cursor_pos_i - drag_offset_);
+      auto drag_image_position_scaled =
+          gfx::Point(scale_factor * drag_image_top_left_corner.x(),
+                     scale_factor * drag_image_top_left_corner.y());
+      MakeDragImageMailbox(drag_image_position_scaled);
+
+      auto damage_rect =
+          gfx::UnionRects(old_content_rect, drag_image_content_rect_);
+      InvalidateRect(damage_rect);
+
+      break;
+    }
+    case DragOperation::kDragOperationDrop: {
+      widget_host->DragTargetDragOver(
+            point, point, drag_ops_, mouse_event.GetModifiers(),
+            base::BindOnce(
+                [](content::DropData drop_data, int event_modifiers,
+                   base::WeakPtr<content::RenderWidgetHostViewBase> target,
+                   base::OnceCallback<void()> callback,
+                   gfx::PointF point,
+                   ui::mojom::DragOperation current_op) {
+                  if (!target) {
+                    return;
+                  }
+                  content::RenderWidgetHostImpl* widget_host =
+                      content::RenderWidgetHostImpl::From(
+                            target->GetRenderWidgetHost());
+                  widget_host->DragTargetDrop(drop_data, point, point,
+                                              event_modifiers, base::DoNothing());
+                  widget_host->DragSourceSystemDragEnded();
+                  widget_host->DragSourceEndedAt(
+                      point, point, current_op, std::move(callback));
+                },
+                std::move(drop_data_),
+                mouse_event.GetModifiers(),
+                std::move(target),
+                base::BindOnce(&WebContents::OnDropEnded,
+                               weak_factory_.GetWeakPtr()),
+                point));
+      break;
+    }
+    default:
+      NOTREACHED();
+  }
+}
+
+void WebContents::OnDropEnded() {
+  drop_data_ = {};
+  start_dragging_ = dragging_ = false;
+  drag_ended_ = true;
+  drag_ops_ = blink::kDragOperationNone;
+
+  if (drag_image_mailbox_.has_value()) {
+    DestroyDragImageMailbox(false);
+    InvalidateRect(drag_image_content_rect_);
+  }
+}
+
 void WebContents::SendInputEvent(v8::Isolate* isolate,
                                  v8::Local<v8::Value> input_event) {
   content::RenderFrameHost* focused_frame = web_contents()->GetFocusedFrame();
@@ -2988,54 +3089,44 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
     if (gin::ConvertFromV8(isolate, input_event, &mouse_event)) {
       if (IsOffScreen()) {
 #if BUILDFLAG(ENABLE_OSR)
-        GetOffScreenRenderWidgetHostView()->SendMouseEvent(mouse_event);
         auto* rwh = view->GetRenderWidgetHost();
         auto cursor_pos = gfx::PointF(mouse_event.PositionInWidget().x(),
                                       mouse_event.PositionInWidget().y());
+
+        bool is_drag = false;
+        bool skip = false;
+        DragOperation operation = DragOperation::kDragOperationNone;
+
+        if (type == blink::WebInputEvent::Type::kMouseDown && dragging_) {
+          skip = true;
+        }
+
         if (type == blink::WebInputEvent::Type::kMouseMove) {
           if (!dragging_ && start_dragging_) {
-            rwh->DragTargetDragEnter(drop_data_, cursor_pos, cursor_pos,
-                drag_ops_, mouse_event.GetModifiers(),
-                base::BindOnce([](::ui::mojom::DragOperation) {}));
-            dragging_ = true;
+            is_drag = true;
+            operation = DragOperation::kDragOperationEnter;
           } else if (dragging_) {
-            rwh->DragTargetDragOver(cursor_pos, cursor_pos, drag_ops_,
-                mouse_event.GetModifiers(),
-                base::BindOnce([](::ui::mojom::DragOperation) {}));
-
-            auto old_content_rect = drag_image_content_rect_;
-
-            auto scale_factor = GetScaleFactor();
-            auto cursor_pos_i = gfx::Point(cursor_pos.x(),
-                                           cursor_pos.y());
-            auto drag_image_top_left_corner = (cursor_pos_i - drag_offset_);
-            auto drag_image_position_scaled =
-                gfx::Point(scale_factor * drag_image_top_left_corner.x(),
-                           scale_factor * drag_image_top_left_corner.y());
-            MakeDragImageMailbox(drag_image_position_scaled);
-
-            auto damage_rect =
-                gfx::UnionRects(old_content_rect, drag_image_content_rect_);
-            InvalidateRect(damage_rect);
+            is_drag = true;
+            operation = DragOperation::kDragOperationDrag;
           }
         } else if (type == blink::WebInputEvent::Type::kMouseUp && dragging_) {
-          rwh->DragTargetDrop(drop_data_, cursor_pos, cursor_pos,
-                              mouse_event.GetModifiers(),
-                              base::BindOnce([]() {}));
-          rwh->DragSourceEndedAt(cursor_pos, cursor_pos,
-                                 (ui::mojom::DragOperation)drag_ops_,
-                                 base::BindOnce([]() {}));
-          rwh->DragSourceSystemDragEnded();
+          is_drag = true;
+          operation = DragOperation::kDragOperationDrop;
+        }
 
-          drop_data_ = {};
-          start_dragging_ = dragging_ = false;
-          drag_ended_ = true;
-          drag_ops_ = blink::kDragOperationNone;
+        if (is_drag) {
+          content::RenderWidgetHostImpl* widget_host =
+              content::RenderWidgetHostImpl::From(rwh);
 
-          if (drag_image_mailbox_.has_value()) {
-            DestroyDragImageMailbox(false);
-            InvalidateRect(drag_image_content_rect_);
-          }
+          widget_host->delegate()->GetInputEventRouter()
+              ->GetRenderWidgetHostAtPointAsynchronously(
+                  widget_host->GetView(), cursor_pos,
+                  base::BindOnce(&WebContents::OnWidgetForDragEvent,
+                                 weak_factory_.GetWeakPtr(),
+                                 std::move(mouse_event),
+                                 std::move(operation)));
+        } else if (!skip) {
+          GetOffScreenRenderWidgetHostView()->SendMouseEvent(mouse_event);
         }
 #endif
       } else {
@@ -3361,6 +3452,8 @@ void WebContents::SetScaleFactor(float pixel_scale_factor) {
   auto* osr_wcv = GetOffScreenWebContentsView();
   if (osr_wcv)
     osr_wcv->SetScaleFactor(pixel_scale_factor);
+
+  SetPageScale(scale_factor_correction_);
 }
 
 float WebContents::GetScaleFactor() const {
@@ -3421,9 +3514,16 @@ double WebContents::GetZoomFactor() const {
 }
 
 void WebContents::SetPageScale(double scale) {
+  scale_factor_correction_ = scale;
   auto* frame = static_cast<content::RenderFrameHostImpl*>(
       web_contents()->GetMainFrame());
-  frame->GetAssociatedLocalMainFrame()->SetScaleFactorCorrection(scale);
+  if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+    frame->GetAssociatedLocalMainFrame()->SetScaleFactorCorrection(GetScaleFactor() * scale_factor_correction_);
+#endif
+  } else {
+    frame->GetAssociatedLocalMainFrame()->SetScaleFactorCorrection(scale_factor_correction_);
+  }
 }
 
 void WebContents::SetTemporaryZoomLevel(double level) {
@@ -4200,12 +4300,15 @@ ElectronBrowserContext* WebContents::GetBrowserContext() const {
       web_contents()->GetBrowserContext());
 }
 
-void WebContents::StartDragging(const content::DropData& drop_data,
-                                blink::DragOperationsMask ops,
-                                gfx::ImageSkia drag_image,
-                                gfx::Vector2d const& offset) {
+void WebContents::StartDragging(
+    const content::DropData& drop_data,
+    blink::DragOperationsMask ops,
+    gfx::ImageSkia drag_image,
+    gfx::Vector2d const& offset,
+    content::RenderWidgetHostImpl* source) {
   start_dragging_ = true;
   drop_data_ = drop_data;
+  source->FilterDropData(&drop_data_);
   drag_ops_ = ops;
   gfx::Size scaled_size(drag_image.width(), drag_image.height());
   drag_image_content_rect_ = gfx::Rect(gfx::Point(), scaled_size);
@@ -4252,20 +4355,8 @@ void WebContents::MakeDragImageMailbox(gfx::Point const& position) {
     return;
   }
 
-  // Flip the drag image
-  SkBitmap bitmap_copy;
-  bitmap_copy.allocN32Pixels(bitmap->width(), bitmap->height());
-  auto surf = SkSurface::MakeRaster(bitmap_copy.info());
-  auto* canvas = surf->getCanvas();
-  canvas->scale(1, -1);
-  canvas->translate(0, -bitmap_copy.height());
-  canvas->translate(-dx, -dy);
-  canvas->writePixels(*bitmap, 0, 0);
-  auto image = surf->makeImageSnapshot();
-  image->readPixels(bitmap_copy.pixmap(), 0, 0);
-
-  void* pixel_data = bitmap_copy.getPixels();
-  auto pixel_size = bitmap_copy.computeByteSize();
+  void* pixel_data = bitmap->getPixels();
+  auto pixel_size = bitmap->computeByteSize();
 
   if (pixel_size == 0) {
     return;

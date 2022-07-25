@@ -87,6 +87,10 @@ class WCPaintObserver : public WebContents::PaintObserver {
                                 content_rect.y(), content_rect.width(),
                                 content_rect.height(), is_popup, callback,
                                 context);
+    } else {
+      if (callback) {
+        callback(context, new ::gpu::SyncToken());
+      }
     }
   }
 

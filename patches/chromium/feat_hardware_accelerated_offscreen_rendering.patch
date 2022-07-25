@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Benedek Heilig <benecene@gmail.com>
-Date: Tue, 5 Jul 2022 15:21:56 +0200
+Date: Mon, 25 Jul 2022 13:47:53 +0200
 Subject: feat: hardware accelerated offscreen rendering
 
 Patch-filename: hardware_accelerated_offscreen_rendering.patch
@@ -336,7 +336,7 @@ index 35f45545e2f33e647fd437d3993dfea135d9b566..9aa392a5bc100e84783d04cd0ea35d4a
    base::queue<SwapInfo> pending_swaps_;
    base::TimeTicks viz_scheduled_draw_;
 diff --git a/components/viz/service/display_embedder/skia_output_device_offscreen.cc b/components/viz/service/display_embedder/skia_output_device_offscreen.cc
-index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..b06fa9ce7e27e4d3dc9c4a71386e30ef9fc76cbd 100644
+index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..fa863e4ea90eb5b914268d65a5a5c530e81b1228 100644
 --- a/components/viz/service/display_embedder/skia_output_device_offscreen.cc
 +++ b/components/viz/service/display_embedder/skia_output_device_offscreen.cc
 @@ -6,8 +6,14 @@
@@ -384,7 +384,7 @@ index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..b06fa9ce7e27e4d3dc9c4a71386e30ef
  bool SkiaOutputDeviceOffscreen::Reshape(const gfx::Size& size,
                                          float device_scale_factor,
                                          const gfx::ColorSpace& color_space,
-@@ -68,11 +82,21 @@ bool SkiaOutputDeviceOffscreen::Reshape(const gfx::Size& size,
+@@ -68,11 +82,23 @@ bool SkiaOutputDeviceOffscreen::Reshape(const gfx::Size& size,
  void SkiaOutputDeviceOffscreen::SwapBuffers(BufferPresentedCallback feedback,
                                              OutputSurfaceFrame frame) {
    // Reshape should have been called first.
@@ -392,23 +392,26 @@ index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..b06fa9ce7e27e4d3dc9c4a71386e30ef
 +  DCHECK(image_);
  
    StartSwapBuffers(std::move(feedback));
+-  FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
+-                    gfx::Size(size_.width(), size_.height()), std::move(frame));
 +
++  auto size = gfx::Size(size_);
 +  mojo::PendingRemote<mojom::SingleReleaseCallback> callback;
 +  mojo::MakeSelfOwnedReceiver(
 +      viz::SingleReleaseCallback::Create(base::BindOnce(
-+          &SkiaOutputDeviceOffscreen::RunFinishSwapBuffers,
-+          weak_ptr_factory_.GetWeakPtr())),
++          &SkiaOutputDeviceOffscreen::OnSwapBuffersFinished,
++          weak_ptr_factory_.GetWeakPtr(),
++          std::move(feedback),
++          std::move(size),
++          std::move(frame))),
 +      callback.InitWithNewPipeAndPassReceiver());
 +
-+  swap_buffers_callback_.Run(gfx::Size(size_), std::move(callback));
-+
-   FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
--                    gfx::Size(size_.width(), size_.height()), std::move(frame));
-+                    gfx::Size(size_), std::move(frame));
++  if (had_at_least_one_paint_)
++    swap_buffers_callback_.Run(gfx::Size(size_), std::move(callback));
  }
  
  void SkiaOutputDeviceOffscreen::PostSubBuffer(const gfx::Rect& rect,
-@@ -86,49 +110,60 @@ void SkiaOutputDeviceOffscreen::EnsureBackbuffer() {
+@@ -86,49 +112,62 @@ void SkiaOutputDeviceOffscreen::EnsureBackbuffer() {
    if (size_.IsEmpty())
      return;
  
@@ -461,24 +464,26 @@ index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..b06fa9ce7e27e4d3dc9c4a71386e30ef
 +
 +  if (did_create_buffer_callback_) {
 +    did_create_buffer_callback_.Run(image_->mailbox());
-+  }
+   }
+-  memory_type_tracker_->TrackMemAlloc(backbuffer_estimated_size_);
 +
 +  auto info = SkImageInfo::Make(size_.width(), size_.height(),
 +                                color_type, alpha_type);
 +  size_t estimated_size = info.computeMinByteSize();
 +  backbuffer_estimated_size_ = estimated_size;
 +
-+  if (!surface_write_access_) {
-+    std::vector<GrBackendSemaphore> begin_semaphores;
++  std::vector<GrBackendSemaphore> begin_semaphores;
 +
-+    surface_write_access_ = image_->BeginScopedWriteAccess(
-+        &begin_semaphores, &end_semaphores_,
-+        gpu::SharedImageRepresentation::AllowUnclearedAccess::kYes);
++  surface_write_access_ = image_->BeginScopedWriteAccess(
++      0 /* final_msaa_count */,
++      SkSurfaceProps(0 /* flags */, kUnknown_SkPixelGeometry),
++      &begin_semaphores, &end_semaphores_,
++      gpu::SharedImageRepresentation::AllowUnclearedAccess::kYes);
 +
-+    surface_write_access_->surface()->wait(begin_semaphores.size(),
-+                                           begin_semaphores.data());
-   }
--  memory_type_tracker_->TrackMemAlloc(backbuffer_estimated_size_);
++  surface_write_access_->surface()->wait(begin_semaphores.size(),
++                                         begin_semaphores.data());
++
++  had_at_least_one_paint_ = false;
  }
  
  void SkiaOutputDeviceOffscreen::DiscardBackbuffer() {
@@ -507,7 +512,7 @@ index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..b06fa9ce7e27e4d3dc9c4a71386e30ef
      backbuffer_estimated_size_ = 0u;
    }
  }
-@@ -137,20 +172,19 @@ SkSurface* SkiaOutputDeviceOffscreen::BeginPaint(
+@@ -137,20 +176,61 @@ SkSurface* SkiaOutputDeviceOffscreen::BeginPaint(
      bool allocate_frame_buffer,
      std::vector<GrBackendSemaphore>* end_semaphores) {
    DCHECK(!allocate_frame_buffer);
@@ -521,26 +526,68 @@ index 8fcc2ba100b40bfc042ce99f5d0e14614eb7b6b5..b06fa9ce7e27e4d3dc9c4a71386e30ef
 -            : kBottomLeft_GrSurfaceOrigin,
 -        0 /* sampleCount */, kSurfaceColorType, sk_color_space_,
 -        &surface_props);
--  }
--  return sk_surface_.get();
 +  DCHECK(image_);
 +
 +  end_semaphores->swap(end_semaphores_);
 +
 +  return surface_write_access_->surface();
- }
- 
- void SkiaOutputDeviceOffscreen::EndPaint() {}
- 
-+void SkiaOutputDeviceOffscreen::RunFinishSwapBuffers(
-+    const gpu::SyncToken& sync_token,
-+    bool is_lost) {
-+  // TODO: make this work
 +}
 +
++void SkiaOutputDeviceOffscreen::EndPaint() {
++  had_at_least_one_paint_ = true;
++}
++
++void SkiaOutputDeviceOffscreen::OnSwapBuffersFinished(
++    BufferPresentedCallback feedback,
++    const gfx::Size& size,
++    OutputSurfaceFrame frame,
++    const gpu::SyncToken& sync_token,
++    bool is_lost) {
++  if (is_lost) {
++    DoRunFinishSwapBuffers(std::move(feedback), size, std::move(frame));
++    return;
++  }
++
++  impl_gpu_->ScheduleGPUTask(base::BindOnce(
++      &SkiaOutputDeviceOffscreen::RunFinishSwapBuffers,
++      weak_ptr_factory_.GetWeakPtr(),
++      std::move(feedback),
++      std::move(size),
++      std::move(frame),
++      std::move(sync_token)), sync_token);
++}
++
++void SkiaOutputDeviceOffscreen::RunFinishSwapBuffers(
++    BufferPresentedCallback feedback,
++    const gfx::Size& size,
++    OutputSurfaceFrame frame,
++    const gpu::SyncToken& sync_token) {
++  bool waiting = impl_gpu_->GetSyncPointClientState()->Wait(
++      sync_token, base::BindOnce(
++          &SkiaOutputDeviceOffscreen::DoRunFinishSwapBuffers,
++          weak_ptr_factory_.GetWeakPtr(),
++          std::move(feedback),
++          std::move(size),
++          std::move(frame)));
++
++  if (!waiting) {
++    DoRunFinishSwapBuffers(std::move(feedback), size, std::move(frame));
+   }
+-  return sk_surface_.get();
+ }
+ 
+-void SkiaOutputDeviceOffscreen::EndPaint() {}
++void SkiaOutputDeviceOffscreen::DoRunFinishSwapBuffers(
++    BufferPresentedCallback feedback,
++    const gfx::Size& size,
++    OutputSurfaceFrame frame) {
++  FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
++                    size, std::move(frame));
++}
+ 
  }  // namespace viz
 diff --git a/components/viz/service/display_embedder/skia_output_device_offscreen.h b/components/viz/service/display_embedder/skia_output_device_offscreen.h
-index e983d90c8001513fa4cdf66ca0fb98a22f08883c..90fcaaf506cef451f058f2e14434e3b7a1003e12 100644
+index e983d90c8001513fa4cdf66ca0fb98a22f08883c..9f2fa719158f2cb54c989f48c36b3e59fe75401e 100644
 --- a/components/viz/service/display_embedder/skia_output_device_offscreen.h
 +++ b/components/viz/service/display_embedder/skia_output_device_offscreen.h
 @@ -8,7 +8,9 @@
@@ -570,12 +617,24 @@ index e983d90c8001513fa4cdf66ca0fb98a22f08883c..90fcaaf506cef451f058f2e14434e3b7
    // SkiaOutputDevice implementation:
    bool Reshape(const gfx::Size& size,
                 float device_scale_factor,
-@@ -48,17 +53,27 @@ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
+@@ -48,17 +53,40 @@ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
    void EndPaint() override;
  
   protected:
-+  void RunFinishSwapBuffers(const gpu::SyncToken& sync_token,
-+                            bool is_lost);
++  void OnSwapBuffersFinished(BufferPresentedCallback feedback,
++                             const gfx::Size& size,
++                             OutputSurfaceFrame frame,
++                             const gpu::SyncToken& sync_token,
++                             bool is_lost);
++
++  void RunFinishSwapBuffers(BufferPresentedCallback feedback,
++                            const gfx::Size& size,
++                            OutputSurfaceFrame frame,
++                            const gpu::SyncToken& sync_token);
++
++  void DoRunFinishSwapBuffers(BufferPresentedCallback feedback,
++                              const gfx::Size& size,
++                              OutputSurfaceFrame frame);
 +
    scoped_refptr<gpu::SharedContextState> context_state_;
 +  scoped_refptr<viz::SkiaOutputSurfaceImplOnGpu> impl_gpu_;
@@ -590,6 +649,7 @@ index e983d90c8001513fa4cdf66ca0fb98a22f08883c..90fcaaf506cef451f058f2e14434e3b7
    gfx::BufferFormat format_ = gfx::BufferFormat::RGBA_8888;
    sk_sp<SkColorSpace> sk_color_space_;
 +  std::vector<GrBackendSemaphore> end_semaphores_;
++  bool had_at_least_one_paint_ = false;
 +
 +  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
  
@@ -600,6 +660,55 @@ index e983d90c8001513fa4cdf66ca0fb98a22f08883c..90fcaaf506cef451f058f2e14434e3b7
  };
  
  }  // namespace viz
+diff --git a/components/viz/service/display_embedder/skia_output_surface_dependency.h b/components/viz/service/display_embedder/skia_output_surface_dependency.h
+index 43dadb7bff85282a2a08cc0db35263923842e375..2e823c549b36760ab52e80a801aa7d34a18511b5 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_dependency.h
++++ b/components/viz/service/display_embedder/skia_output_surface_dependency.h
+@@ -96,6 +96,10 @@ class VIZ_SERVICE_EXPORT SkiaOutputSurfaceDependency {
+   // called only from GPU Thread.
+   virtual void ScheduleDelayedGPUTaskFromGPUThread(base::OnceClosure task) = 0;
+ 
++  virtual void ScheduleGPUTask(gpu::SequenceId sequence,
++                               base::OnceClosure task,
++                               const gpu::SyncToken& sync_token) = 0;
++
+ #if BUILDFLAG(IS_WIN)
+   virtual void DidCreateAcceleratedSurfaceChildWindow(
+       gpu::SurfaceHandle parent_window,
+diff --git a/components/viz/service/display_embedder/skia_output_surface_dependency_impl.cc b/components/viz/service/display_embedder/skia_output_surface_dependency_impl.cc
+index 342f27f9daf371cb2745257a8b6051b9a8de3e15..a08c1a83fcf93ee60a855efb731d81b122c08be5 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_dependency_impl.cc
++++ b/components/viz/service/display_embedder/skia_output_surface_dependency_impl.cc
+@@ -143,6 +143,15 @@ void SkiaOutputSurfaceDependencyImpl::ScheduleDelayedGPUTaskFromGPUThread(
+       FROM_HERE, std::move(task), kDelayForDelayedWork);
+ }
+ 
++void SkiaOutputSurfaceDependencyImpl::ScheduleGPUTask(
++    gpu::SequenceId sequence,
++    base::OnceClosure task,
++    const gpu::SyncToken& sync_token) {
++  gpu_service_impl_->GetGpuScheduler()->ScheduleTask(
++      gpu::Scheduler::Task(sequence, std::move(task),
++                           std::vector<gpu::SyncToken>({sync_token})));
++}
++
+ #if BUILDFLAG(IS_WIN)
+ void SkiaOutputSurfaceDependencyImpl::DidCreateAcceleratedSurfaceChildWindow(
+     gpu::SurfaceHandle parent_window,
+diff --git a/components/viz/service/display_embedder/skia_output_surface_dependency_impl.h b/components/viz/service/display_embedder/skia_output_surface_dependency_impl.h
+index d8d90afe2eef7d03bf127fb49288c697f56e2e5d..876b84e6e1f4eeea852b6bf4ffd64f93ffd9161d 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_dependency_impl.h
++++ b/components/viz/service/display_embedder/skia_output_surface_dependency_impl.h
+@@ -55,6 +55,9 @@ class VIZ_SERVICE_EXPORT SkiaOutputSurfaceDependencyImpl
+   void PostTaskToClientThread(base::OnceClosure closure) override;
+   void ScheduleGrContextCleanup() override;
+   void ScheduleDelayedGPUTaskFromGPUThread(base::OnceClosure task) override;
++  void ScheduleGPUTask(gpu::SequenceId sequence,
++                       base::OnceClosure task,
++                       const gpu::SyncToken& sync_token) override;
+ 
+ #if BUILDFLAG(IS_WIN)
+   void DidCreateAcceleratedSurfaceChildWindow(
 diff --git a/components/viz/service/display_embedder/skia_output_surface_impl.cc b/components/viz/service/display_embedder/skia_output_surface_impl.cc
 index a07f5e4f9f3a79545d26fee9c41d4ef04f9b60e0..372231c9384b79ea7530fb52572e12fa822bc6bf 100644
 --- a/components/viz/service/display_embedder/skia_output_surface_impl.cc
@@ -780,7 +889,7 @@ index d55985b4f99df3b0e6bc855316257ba4a84a6dfa..e4abef80182de5991d3553b5be25b1bf
    sk_sp<GrContextThreadSafeProxy> gr_context_thread_safe_;
  
 diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
-index eb35a45820e11f98de254431ee9bc694eef8cfea..2808cd5201d35993d168d8f8bcd9b48c670918e0 100644
+index eb35a45820e11f98de254431ee9bc694eef8cfea..b6ba83a809336949dc394cf45b03c86984e3995e 100644
 --- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
 +++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
 @@ -59,6 +59,7 @@
@@ -913,9 +1022,13 @@ index eb35a45820e11f98de254431ee9bc694eef8cfea..2808cd5201d35993d168d8f8bcd9b48c
  }
  
  bool SkiaOutputSurfaceImplOnGpu::Initialize() {
-@@ -1505,10 +1541,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForGL() {
+@@ -1504,11 +1540,18 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForGL() {
+     if (!gl_surface_)
        return false;
  
++    gl_surface_->SetGpuVSyncEnabled(false);
++    gl_surface_->SetVSyncEnabled(false);
++
      output_device_ = std::make_unique<SkiaOutputDeviceOffscreen>(
 -        context_state_, gfx::SurfaceOrigin::kTopLeft,
 +        context_state_,
@@ -929,7 +1042,7 @@ index eb35a45820e11f98de254431ee9bc694eef8cfea..2808cd5201d35993d168d8f8bcd9b48c
    } else {
      gl_surface_ =
          dependency_->CreateGLSurface(weak_ptr_factory_.GetWeakPtr(), format);
-@@ -1573,10 +1613,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForGL() {
+@@ -1573,10 +1616,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForGL() {
  bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
    if (dependency_->IsOffscreen()) {
      output_device_ = std::make_unique<SkiaOutputDeviceOffscreen>(
@@ -945,7 +1058,7 @@ index eb35a45820e11f98de254431ee9bc694eef8cfea..2808cd5201d35993d168d8f8bcd9b48c
      return true;
    }
  
-@@ -1671,10 +1715,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForDawn() {
+@@ -1671,10 +1718,14 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForDawn() {
  #if BUILDFLAG(SKIA_USE_DAWN)
    if (dependency_->IsOffscreen()) {
      output_device_ = std::make_unique<SkiaOutputDeviceOffscreen>(
@@ -961,7 +1074,7 @@ index eb35a45820e11f98de254431ee9bc694eef8cfea..2808cd5201d35993d168d8f8bcd9b48c
    } else {
  #if defined(USE_OZONE_PLATFORM_X11)
      // TODO(rivr): Set up a Vulkan swapchain so that Linux can also use
-@@ -2092,6 +2140,11 @@ void SkiaOutputSurfaceImplOnGpu::RemoveAsyncReadResultHelperWithLock(
+@@ -2092,6 +2143,19 @@ void SkiaOutputSurfaceImplOnGpu::RemoveAsyncReadResultHelperWithLock(
    async_read_result_helpers_.erase(helper);
  }
  
@@ -970,11 +1083,19 @@ index eb35a45820e11f98de254431ee9bc694eef8cfea..2808cd5201d35993d168d8f8bcd9b48c
 +  return sync_point_client_state_;
 +}
 +
++void SkiaOutputSurfaceImplOnGpu::ScheduleGPUTask(
++    base::OnceClosure task, const gpu::SyncToken& sync_token) {
++  dependency_->ScheduleGPUTask(
++    GetSyncPointClientState()->sequence_id(),
++    std::move(task),
++    std::move(sync_token));
++}
++
  void SkiaOutputSurfaceImplOnGpu::EnsureBackbuffer() {
    // We call GLSurface::SetBackbuffferAllocation in Ensure/Discard backbuffer,
    // so technically need framebuffer. In reality no GLSurface implements it, but
 diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h
-index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..7e1bb6ac6468f1c371869df955ebf39cfbb8408f 100644
+index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..96d3263f0263003a76e23585473134cc796977ad 100644
 --- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h
 +++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.h
 @@ -12,6 +12,8 @@
@@ -986,7 +1107,15 @@ index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..7e1bb6ac6468f1c371869df955ebf39c
  #include "base/threading/thread_checker.h"
  #include "base/types/id_type.h"
  #include "base/types/pass_key.h"
-@@ -77,10 +79,19 @@ namespace copy_output {
+@@ -57,6 +59,7 @@ namespace gpu {
+ class SharedImageRepresentationFactory;
+ class SharedImageFactory;
+ class SyncPointClientState;
++class SyncPointManager;
+ }  // namespace gpu
+ 
+ namespace ui {
+@@ -77,10 +80,19 @@ namespace copy_output {
  struct RenderPassGeometry;
  }  // namespace copy_output
  
@@ -1006,7 +1135,7 @@ index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..7e1bb6ac6468f1c371869df955ebf39c
        public gpu::SharedContextState::ContextLostObserver {
   public:
    using DidSwapBufferCompleteCallback =
-@@ -93,13 +104,15 @@ class SkiaOutputSurfaceImplOnGpu
+@@ -93,13 +105,15 @@ class SkiaOutputSurfaceImplOnGpu
  
    // |gpu_vsync_callback| must be safe to call on any thread. The other
    // callbacks will only be called via |deps->PostTaskToClientThread|.
@@ -1023,7 +1152,7 @@ index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..7e1bb6ac6468f1c371869df955ebf39c
        ContextLostCallback context_lost_callback,
        GpuVSyncCallback gpu_vsync_callback);
  
-@@ -112,15 +125,18 @@ class SkiaOutputSurfaceImplOnGpu
+@@ -112,15 +126,18 @@ class SkiaOutputSurfaceImplOnGpu
        gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps,
        DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
        BufferPresentedCallback buffer_presented_callback,
@@ -1044,16 +1173,19 @@ index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..7e1bb6ac6468f1c371869df955ebf39c
    gpu::CommandBufferId command_buffer_id() const {
      return shared_gpu_deps_->command_buffer_id();
    }
-@@ -247,6 +263,8 @@ class SkiaOutputSurfaceImplOnGpu
+@@ -247,6 +264,11 @@ class SkiaOutputSurfaceImplOnGpu
    void AddAsyncReadResultHelperWithLock(AsyncReadResultHelper* helper);
    void RemoveAsyncReadResultHelperWithLock(AsyncReadResultHelper* helper);
  
 +  scoped_refptr<gpu::SyncPointClientState> GetSyncPointClientState();
 +
++  void ScheduleGPUTask(base::OnceClosure task,
++                       const gpu::SyncToken& sync_token);
++
   private:
    class DisplayContext;
  
-@@ -329,13 +347,16 @@ class SkiaOutputSurfaceImplOnGpu
+@@ -329,13 +351,16 @@ class SkiaOutputSurfaceImplOnGpu
                        SkSurface::RescaleMode rescale_mode,
                        bool is_downscale_or_identity_in_both_dimensions,
                        std::unique_ptr<CopyOutputRequest> request);
@@ -1075,7 +1207,7 @@ index e815e57cf65e54fcf9425fa1ea3b9053a2d5abcf..7e1bb6ac6468f1c371869df955ebf39c
    // Helper for `CopyOutputNV12()` & `CopyOutputRGBA()` methods, renders
    // |surface| into |dest_surface|'s canvas, cropping and scaling the results
    // appropriately. |source_selection| is the area of the |surface| that will be
-@@ -415,6 +436,8 @@ class SkiaOutputSurfaceImplOnGpu
+@@ -415,6 +440,8 @@ class SkiaOutputSurfaceImplOnGpu
    // Should only be run on the client thread with PostTaskToClientThread().
    DidSwapBufferCompleteCallback did_swap_buffer_complete_callback_;
    BufferPresentedCallback buffer_presented_callback_;
@@ -1268,6 +1400,19 @@ index 4473da808978854e24bc3f83770d1372a2ee7a31..bba0f905fd90342936620ef01ad1f997
    };
  
    // Disables GPU compositing. This notifies UI and renderer compositors to drop
+diff --git a/content/browser/renderer_host/render_widget_host_view_base.h b/content/browser/renderer_host/render_widget_host_view_base.h
+index 98da92a6d31103dfa0a48e278c3a15ee0533791e..f5e5bfff77262f6ce91ff0eb16616826a8018699 100644
+--- a/content/browser/renderer_host/render_widget_host_view_base.h
++++ b/content/browser/renderer_host/render_widget_host_view_base.h
+@@ -682,7 +682,7 @@ class CONTENT_EXPORT RenderWidgetHostViewBase : public RenderWidgetHostView {
+ 
+   // Generates the most current set of ScreenInfos from the current set of
+   // displays in the system for use in UpdateScreenInfo.
+-  display::ScreenInfos GetNewScreenInfosForUpdate();
++  virtual display::ScreenInfos GetNewScreenInfosForUpdate();
+ 
+   // Called when display properties that need to be synchronized with the
+   // renderer process changes. This method is called before notifying
 diff --git a/gpu/GLES2/gl2chromium_autogen.h b/gpu/GLES2/gl2chromium_autogen.h
 index b4ee5a07f6c34ce7f4b30c44fa44d7c1f284384a..24ca089e5d558fa8ae375c06b78395dbacd10592 100644
 --- a/gpu/GLES2/gl2chromium_autogen.h
@@ -1836,6 +1981,21 @@ index fe3b7510a54ee5d43eedfdd282ffbbcb279cc5ff..6ce90bcc5ecde92c44f321b9c4cfb0f8
    if (usage & ~allowed_usage) {
      LOG(ERROR) << "Unsupported usage for SharedImage with initial data upload.";
      return false;
+diff --git a/gpu/command_buffer/service/sync_point_manager.h b/gpu/command_buffer/service/sync_point_manager.h
+index cae60b4a3b87ede99ed31a3375d3ce109781a371..753b9456682c67af1dab4d7f3e0a7a0a75dfa06d 100644
+--- a/gpu/command_buffer/service/sync_point_manager.h
++++ b/gpu/command_buffer/service/sync_point_manager.h
+@@ -185,6 +185,10 @@ class GPU_EXPORT SyncPointClientState
+   // processing thread.
+   void ReleaseFenceSync(uint64_t release);
+ 
++  scoped_refptr<SyncPointOrderData> GetOrderData() {
++    return order_data_;
++  }
++
+  private:
+   friend class base::RefCountedThreadSafe<SyncPointClientState>;
+   friend class SyncPointManager;
 diff --git a/gpu/ipc/scheduler_sequence.h b/gpu/ipc/scheduler_sequence.h
 index 836e1f441836295041340cbdd4cab48556fa406f..d84750143e1659f85cb4fea7751dfae1db5c4670 100644
 --- a/gpu/ipc/scheduler_sequence.h
@@ -2338,3 +2498,33 @@ index f894f7757d96dcaf19d7b079b0fa84539f9eabfb..33b236b3e325dbc8727ddcc3b59c9a05
    auto it = registered_hwnds_.find(parent);
    if (it == registered_hwnds_.end())
      return false;
+diff --git a/ui/gl/gl_surface_egl.cc b/ui/gl/gl_surface_egl.cc
+index acfd4afd725dc763f08b3b787ea8c1e79a3407ae..2b38c46b8949cdea968b6a69fc72b685165af59d 100644
+--- a/ui/gl/gl_surface_egl.cc
++++ b/ui/gl/gl_surface_egl.cc
+@@ -977,6 +977,13 @@ EGLConfig GLSurfaceEGL::GetConfig() {
+   return config_;
+ }
+ 
++void GLSurfaceEGL::SetVSyncEnabled(bool enabled) {
++  if (!eglSwapInterval(GetDisplay(), enabled ? 1 : 0)) {
++    LOG(ERROR) << "eglSwapInterval failed with error "
++               << GetLastEGLErrorString();
++  }
++}
++
+ // static
+ bool GLSurfaceEGL::InitializeOneOff(EGLDisplayPlatform native_display) {
+   if (initialized_)
+diff --git a/ui/gl/gl_surface_egl.h b/ui/gl/gl_surface_egl.h
+index 61faca34932a4a41f9d5b9c0c05b09e3b6c90900..678f9f14eaf9d7caa4c35973e87fe0963aad33f5 100644
+--- a/ui/gl/gl_surface_egl.h
++++ b/ui/gl/gl_surface_egl.h
+@@ -97,6 +97,7 @@ class GL_EXPORT GLSurfaceEGL : public GLSurface {
+   EGLDisplay GetDisplay() override;
+   EGLConfig GetConfig() override;
+   GLSurfaceFormat GetFormat() override;
++  void SetVSyncEnabled(bool enabled) override;
+ 
+   static bool InitializeOneOff(EGLDisplayPlatform native_display);
+   static bool InitializeOneOffForTesting();
