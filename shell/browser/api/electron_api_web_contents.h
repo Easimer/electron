@@ -299,7 +299,7 @@ class WebContents : public ExclusiveAccessContext,
       DragOperation operation,
       base::WeakPtr<content::RenderWidgetHostViewBase> target,
       absl::optional<gfx::PointF> maybe_point);
-  void OnDropEnded();
+  void OnDropEnded(blink::WebMouseEvent event);
 
   // Send WebInputEvent to the page.
   void SendInputEvent(v8::Isolate* isolate, v8::Local<v8::Value> input_event);

@@ -2995,8 +2995,7 @@ void WebContents::OnWidgetForDragEvent(
     case DragOperation::kDragOperationDrag: {
       if (current_rwh_for_drag_.get() != widget_host) {
         if (current_rwh_for_drag_) {
-          current_rwh_for_drag_->DragTargetDragLeave(
-              gfx::PointF(0.0f, 0.0f), point);
+          current_rwh_for_drag_->DragTargetDragLeave(point, point);
         }
 
         current_rwh_for_drag_ = widget_host->GetWeakPtr();
@@ -3053,7 +3052,8 @@ void WebContents::OnWidgetForDragEvent(
                 mouse_event.GetModifiers(),
                 std::move(target),
                 base::BindOnce(&WebContents::OnDropEnded,
-                               weak_factory_.GetWeakPtr()),
+                               weak_factory_.GetWeakPtr(),
+                               std::move(mouse_event)),
                 point));
       break;
     }
@@ -3062,7 +3062,15 @@ void WebContents::OnWidgetForDragEvent(
   }
 }
 
-void WebContents::OnDropEnded() {
+void WebContents::OnDropEnded(blink::WebMouseEvent event) {
+  blink::WebMouseEvent mouse_event(event);
+  mouse_event.SetType(blink::WebInputEvent::Type::kMouseMove);
+  mouse_event.SetModifiers(0);
+  mouse_event.button = blink::WebPointerProperties::Button::kNoButton;
+  mouse_event.SetTimeStamp(base::TimeTicks::Now());
+
+  GetOffScreenRenderWidgetHostView()->SendMouseEvent(mouse_event);
+
   drop_data_ = {};
   start_dragging_ = dragging_ = false;
   drag_ended_ = true;
