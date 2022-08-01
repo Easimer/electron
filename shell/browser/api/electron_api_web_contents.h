@@ -405,6 +405,8 @@ class WebContents : public ExclusiveAccessContext,
   bool EmitNavigationEvent(const std::string& event,
                            content::NavigationHandle* navigation_handle);
 
+  void WillNavigate();
+
   // this.emit(name, new Event(sender, message), args...);
   template <typename... Args>
   bool EmitWithSender(base::StringPiece name,

@@ -267,6 +267,11 @@ class NativeWindowMac : public NativeWindow,
   // Maximizable window state; necessary for persistence through redraws.
   bool maximizable_ = true;
 
+  // Fullscreen and fullscreenable window state; necessary for fake html only
+  // fullscreen
+  bool fullscreenable_ = true;
+  bool fullscreen_ = false;
+
   bool user_set_bounds_maximized_ = false;
 
   // Simple (pre-Lion) Fullscreen Settings

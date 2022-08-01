@@ -6,6 +6,8 @@
 
 #include <IOSurface/IOSurface.h>
 
+#include "content/public/browser/gpu_data_manager.h"
+
 namespace electron {
 
 void OffScreenHostDisplayClient::OnDisplayReceivedCALayerParams(

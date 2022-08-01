@@ -17,7 +17,6 @@ ELECTRON_EXTERN void glWaitSyncTokenCHROMIUM(const GLbyte* sync_token) {
 }
 
 ELECTRON_EXTERN void glGenSyncTokenCHROMIUM(GLbyte* sync_token) {
-  // LOG(INFO) << "glGenSyncTokenCHROMIUM" << '\n';
   gles2::GetGLContext()->GenSyncTokenCHROMIUM(sync_token);
 }
 

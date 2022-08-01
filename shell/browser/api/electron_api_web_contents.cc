@@ -1003,6 +1003,7 @@ void WebContents::DeleteThisIfAlive() {
 }
 
 void WebContents::Destroy() {
+  Emit("destroy-called");
   // The content::WebContents should be destroyed asyncronously when possible
   // as user may choose to destroy WebContents during an event of it.
   if (Browser::Get()->is_shutting_down() || IsGuest()) {
@@ -1758,6 +1759,25 @@ bool WebContents::EmitNavigationEvent(
               frame_routing_id);
 }
 
+void WebContents::WillNavigate() {
+  if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+  base::PostTask(FROM_HERE, {content::BrowserThread::UI},
+                 base::BindOnce(
+                     [](base::WeakPtr<WebContents> contents) {
+                       if (contents) {
+                         auto* offscreen_web_contents_view =
+                            contents->GetOffScreenWebContentsView();
+                         if (offscreen_web_contents_view) {
+                           offscreen_web_contents_view->SetPainting(false);
+                         }
+                       }
+                     },
+                     GetWeakPtr()));
+#endif
+  }
+}
+
 void WebContents::Message(bool internal,
                           const std::string& channel,
                           blink::CloneableMessage arguments,
@@ -2444,6 +2464,8 @@ void WebContents::OpenDevTools(gin::Arguments* args) {
 void WebContents::CloseDevTools() {
   if (type_ == Type::kRemote)
     return;
+
+  LOG(INFO) << "CloseDevTools";
 
   DCHECK(inspectable_web_contents_);
   inspectable_web_contents_->CloseDevTools();

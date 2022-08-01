@@ -31,6 +31,7 @@ electron::api::gpu::Mailbox ApiMailboxFromGpuMailbox(::gpu::Mailbox mailbox) {
   return api_mailbox;
 }
 
+#if BUILDFLAG(IS_WIN)
 ::gpu::Mailbox GpuMailboxFromApiMailbox(electron::api::gpu::Mailbox mailbox) {
   ::gpu::Mailbox gpu_mailbox;
 
@@ -38,6 +39,7 @@ electron::api::gpu::Mailbox ApiMailboxFromGpuMailbox(::gpu::Mailbox mailbox) {
 
   return gpu_mailbox;
 }
+#endif
 }  // namespace
 
 namespace electron {

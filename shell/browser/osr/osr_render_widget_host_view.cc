@@ -741,9 +741,6 @@ bool OffScreenRenderWidgetHostView::InstallTransparency() {
 }
 
 #if BUILDFLAG(IS_MAC)
-void OffScreenRenderWidgetHostView::SetWindowFrameInScreen(
-    const gfx::Rect& rect) {}
-
 void OffScreenRenderWidgetHostView::ShowSharePicker(
     const std::string& title,
     const std::string& text,
@@ -979,7 +976,7 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
     const gfx::Rect& damage_rect,
     void (*callback)(void*, void*),
     void* context) {
-  if (!painting_) {
+  if (!painting_ || paint_halted_) {
     callback(context, new gpu::SyncToken());
     return;
   }

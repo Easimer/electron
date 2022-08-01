@@ -390,14 +390,6 @@ void ElectronMainDelegate::PreSandboxStartup() {
 
     // Allow file:// URIs to read other file:// URIs by default.
     command_line->AppendSwitch(::switches::kAllowFileAccessFromFiles);
-
-#if BUILDFLAG(IS_MAC)
-    // Enable AVFoundation.
-    command_line->AppendSwitch("enable-avfoundation");
-    command_line->AppendSwitch(::switches::kDisableRemoteCoreAnimation);
-    command_line->AppendSwitch(
-        ::switches::kDisableGpuMemoryBufferCompositorResources);
-#endif
   }
 }
 

@@ -160,7 +160,7 @@ declare namespace Electron {
 
   // Experimental views API
   class BaseWindow {
-    constructor(args: {show: boolean})
+    constructor(args: { [key: string]: any; })
     setContentView(view: View): void
     static fromId(id: number): BaseWindow;
     static getAllWindows(): BaseWindow[];

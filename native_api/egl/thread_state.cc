@@ -42,11 +42,6 @@ namespace egl {
 egl::ThreadState* ThreadState::Get() {
   base::AutoLock lock(g_egl_lock.Get());
   if (g_egl_active_thread_count == 0) {
-    // if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) {
-    //   LOG(INFO) << "Not on browser thread :((" << '\n';
-    //   return nullptr;
-    // }
-
     if (!content::GetGpuChannelEstablishFactory()) {
       return nullptr;
     }

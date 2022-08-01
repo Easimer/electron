@@ -12,7 +12,7 @@
 #include "gpu/command_buffer/common/gpu_memory_buffer_support.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "third_party/skia/include/core/SkMatrix44.h"
+#include "third_party/skia/include/core/SkM44.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -25,15 +25,14 @@ OverlaySurface::OverlaySurface(
     scoped_refptr<viz::ContextProviderCommandBuffer> context_provider,
     gpu::SurfaceHandle surface_handle)
     : context_provider_(context_provider) {
-  DCHECK(buffer_queue_);
-
   buffer_queue_ = std::make_unique<viz::BufferQueue>(
-      context_provider->SharedImageInterface(), surface_handle);
+      context_provider->SharedImageInterface(), gfx::kNullAcceleratedWidget);
   buffer_queue_->SetSyncTokenProvider(this);
 
   auto* gl = context_provider_->ContextGL();
   gl->GenFramebuffers(1, &fbo_);
   gl->FramebufferBackbuffer(fbo_);
+
   Reshape(gfx::Size(50,50), 1.0f);
   BindFramebuffer();
 }
@@ -107,13 +106,16 @@ void OverlaySurface::SwapBuffers() {
 
   GLfloat opacity = 1.0f;
   GLfloat contents_rect[4] = {0, 0, 1.0f, 1.0f};
-  GLfloat bounds_rect[4] = {0, 0, size_.width(), size_.height()};
+  GLfloat bounds_rect[4] = {
+    0, 0,
+    static_cast<GLfloat>(size_.width()), static_cast<GLfloat>(size_.height())
+  };
   GLboolean is_clipped = GL_FALSE;
   GLfloat clip_rect[4] = {0, 0, 0, 0};
   GLfloat rounded_corner_bounds[5] = {0, 0, 0, 0, 0};
   GLint sorting_context_id = 0;
   GLfloat transform[16];
-  SkMatrix44(SkMatrix44::kIdentity_Constructor).asColMajorf(transform);
+  SkM44().getColMajor(transform);
   unsigned filter = GL_NEAREST;
   unsigned edge_aa_mask = 0;
 
@@ -137,7 +139,7 @@ void OverlaySurface::SwapBuffers() {
 }
 
 void OverlaySurface::SwapBuffersComplete() {
-  buffer_queue_->PageFlipComplete();
+  buffer_queue_->PageFlipComplete(gfx::GpuFenceHandle());
 }
 
 void OverlaySurface::BindFramebuffer() {
@@ -150,7 +152,7 @@ void OverlaySurface::BindFramebuffer() {
   DCHECK(buffer_queue_);
   gpu::SyncToken creation_sync_token;
   const gpu::Mailbox current_buffer =
-      buffer_queue_->GetCurrentBuffer(&creation_sync_token);
+      buffer_queue_->GetCurrentBuffer(&creation_sync_token, nullptr);
   if (current_buffer.IsZero())
     return;
   gl->WaitSyncTokenCHROMIUM(creation_sync_token.GetConstData());

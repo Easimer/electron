@@ -37,10 +37,13 @@ ElectronNavigationThrottle::WillStartRequest() {
     return PROCEED;
   }
 
+  api_contents->WillNavigate();
+
   if (handle->IsRendererInitiated() && handle->IsInMainFrame() &&
       api_contents->EmitNavigationEvent("will-navigate", handle)) {
     return CANCEL;
   }
+
   return PROCEED;
 }
 

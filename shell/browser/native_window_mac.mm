@@ -275,6 +275,9 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
   bool closable = true;
   options.Get(options::kClosable, &closable);
 
+  bool fullscreenable = true;
+  options.Get(options::kFullScreenable, &fullscreenable);
+
   std::string tabbingIdentifier;
   options.Get(options::kTabbingIdentifier, &tabbingIdentifier);
 
@@ -446,6 +449,8 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
   // Set maximizable state last to ensure zoom button does not get reset
   // by calls to other APIs.
   SetMaximizable(maximizable);
+
+  SetFullScreenable(fullscreenable);
 
   // Default content view.
   SetContentView(new views::View());
@@ -698,6 +703,8 @@ void NativeWindowMac::SetFullScreen(bool fullscreen) {
   if (fullscreen == IsFullscreen())
     return;
 
+  fullscreen_ = fullscreen;
+
   // Take note of the current window size
   if (IsNormal())
     original_frame_ = [window_ frame];
@@ -710,10 +717,16 @@ void NativeWindowMac::SetFullScreen(bool fullscreen) {
                                      ? FullScreenTransitionState::ENTERING
                                      : FullScreenTransitionState::EXITING;
 
+  if (!fullscreenable_)
+    return;
+
   [window_ toggleFullScreenMode:nil];
 }
 
 bool NativeWindowMac::IsFullscreen() const {
+  if (!fullscreenable_)
+    return fullscreen_;
+
   return [window_ styleMask] & NSWindowStyleMaskFullScreen;
 }
 
@@ -843,10 +856,11 @@ bool NativeWindowMac::IsMaximizable() {
 }
 
 void NativeWindowMac::SetFullScreenable(bool fullscreenable) {
-  SetCollectionBehavior(fullscreenable,
+  fullscreenable_ = fullscreenable;
+  SetCollectionBehavior(fullscreenable_,
                         NSWindowCollectionBehaviorFullScreenPrimary);
   // On EL Capitan this flag is required to hide fullscreen button.
-  SetCollectionBehavior(!fullscreenable,
+  SetCollectionBehavior(!fullscreenable_,
                         NSWindowCollectionBehaviorFullScreenAuxiliary);
 }
 
@@ -1004,6 +1018,9 @@ void NativeWindowMac::OnDisplayMetricsChanged(const display::Display& display,
 
 void NativeWindowMac::SetSimpleFullScreen(bool simple_fullscreen) {
   NSWindow* window = GetNativeWindow().GetNativeNSWindow();
+
+  if (!fullscreenable_)
+    return;
 
   if (simple_fullscreen && !is_simple_fullscreen_) {
     is_simple_fullscreen_ = true;

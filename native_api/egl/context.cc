@@ -106,7 +106,6 @@ void Context::SwapBuffersComplete(
     Surface* surface,
     const gpu::SwapBuffersCompleteParams& params,
     gfx::GpuFenceHandle fence_handle) {
-  LOG(INFO) << "SwapBuffersComplete";
   // send the params
 #if BUILDFLAG(IS_MAC)
   if (!params.ca_layer_params.is_empty && !surface->is_offscreen()) {

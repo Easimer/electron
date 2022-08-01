@@ -14,7 +14,10 @@ class OffscreenHostWindow extends BaseWindow {
     }
 
     super({
-      show: false
+      show: false,
+      fullscreenable: false,
+      maximizable: false,
+      minimizable: false
     });
 
     OffscreenHostWindow._hostView = null;
