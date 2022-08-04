@@ -976,7 +976,7 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
     const gfx::Rect& damage_rect,
     void (*callback)(void*, void*),
     void* context) {
-  if (!painting_ || paint_halted_) {
+  if (!painting_) {
     callback(context, new gpu::SyncToken());
     return;
   }

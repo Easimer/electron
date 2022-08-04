@@ -405,8 +405,6 @@ class WebContents : public ExclusiveAccessContext,
   bool EmitNavigationEvent(const std::string& event,
                            content::NavigationHandle* navigation_handle);
 
-  void WillNavigate();
-
   // this.emit(name, new Event(sender, message), args...);
   template <typename... Args>
   bool EmitWithSender(base::StringPiece name,
@@ -819,6 +817,10 @@ class WebContents : public ExclusiveAccessContext,
 
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
   std::unique_ptr<extensions::ScriptExecutor> script_executor_;
+#endif
+
+#if BUILDFLAG(ENABLE_OSR)
+  bool skip_paint_until_load_ = false;
 #endif
 
   // The host webcontents that may contain this webcontents.

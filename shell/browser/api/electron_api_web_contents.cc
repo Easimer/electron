@@ -1003,7 +1003,6 @@ void WebContents::DeleteThisIfAlive() {
 }
 
 void WebContents::Destroy() {
-  Emit("destroy-called");
   // The content::WebContents should be destroyed asyncronously when possible
   // as user may choose to destroy WebContents during an event of it.
   if (Browser::Get()->is_shutting_down() || IsGuest()) {
@@ -1700,6 +1699,13 @@ void WebContents::DidFinishLoad(content::RenderFrameHost* render_frame_host,
   bool is_main_frame = !render_frame_host->GetParent();
   int frame_process_id = render_frame_host->GetProcess()->GetID();
   int frame_routing_id = render_frame_host->GetRoutingID();
+
+  if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+    skip_paint_until_load_ = false;
+#endif
+  }
+
   auto weak_this = GetWeakPtr();
   Emit("did-frame-finish-load", is_main_frame, frame_process_id,
        frame_routing_id);
@@ -1717,19 +1723,31 @@ void WebContents::DidFailLoad(content::RenderFrameHost* render_frame_host,
   bool is_main_frame = !render_frame_host->GetParent();
   int frame_process_id = render_frame_host->GetProcess()->GetID();
   int frame_routing_id = render_frame_host->GetRoutingID();
+
+  if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+    skip_paint_until_load_ = false;
+#endif
+  }
+
   Emit("did-fail-load", error_code, "", url, is_main_frame, frame_process_id,
        frame_routing_id);
 }
 
 void WebContents::DidStartLoading() {
   Emit("did-start-loading");
+
+  if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+    skip_paint_until_load_ = true;
+#endif
+  }
 }
 
 void WebContents::DidStopLoading() {
   auto* web_preferences = WebContentsPreferences::From(web_contents());
   if (web_preferences && web_preferences->ShouldUsePreferredSizeMode())
     web_contents()->GetRenderViewHost()->EnablePreferredSizeMode();
-
   Emit("did-stop-loading");
 }
 
@@ -1757,25 +1775,6 @@ bool WebContents::EmitNavigationEvent(
   auto url = navigation_handle->GetURL();
   return Emit(event, url, is_same_document, is_main_frame, frame_process_id,
               frame_routing_id);
-}
-
-void WebContents::WillNavigate() {
-  if (IsOffScreen()) {
-#if BUILDFLAG(ENABLE_OSR)
-  base::PostTask(FROM_HERE, {content::BrowserThread::UI},
-                 base::BindOnce(
-                     [](base::WeakPtr<WebContents> contents) {
-                       if (contents) {
-                         auto* offscreen_web_contents_view =
-                            contents->GetOffScreenWebContentsView();
-                         if (offscreen_web_contents_view) {
-                           offscreen_web_contents_view->SetPainting(false);
-                         }
-                       }
-                     },
-                     GetWeakPtr()));
-#endif
-  }
 }
 
 void WebContents::Message(bool internal,
@@ -3410,7 +3409,8 @@ void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
                                  bool is_popup,
                                  void (*callback)(void*, void*),
                                  void* context) {
-  if (!paint_observers_.empty()) {
+  if (!paint_observers_.empty() && !skip_paint_until_load_) {
+    Emit("texture-paint");
     for (PaintObserver& observer : paint_observers_) {
       observer.OnTexturePaint(std::move(mailbox), std::move(sync_token),
                               std::move(content_rect), is_popup, callback,

@@ -1,0 +1,20 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Heilig Benedek <benecene@gmail.com>
+Date: Thu, 4 Aug 2022 14:36:41 +0200
+Subject: This patch removes a warning to allow cross compilation on Apple
+ Silicon.
+
+Patch-filename: mac_cross_compile.patch
+
+diff --git a/deps/v8/src/objects/swiss-hash-table-helpers.h b/deps/v8/src/objects/swiss-hash-table-helpers.h
+index 98a1abd39dfed61393439192363e8056d48684e4..0bcb6bfe4fec027815d177b9f1aafcb26b680a92 100644
+--- a/deps/v8/src/objects/swiss-hash-table-helpers.h
++++ b/deps/v8/src/objects/swiss-hash-table-helpers.h
+@@ -38,7 +38,6 @@
+ // This is due to the difference in group sizes (see comment at the beginning of
+ // the file). We can solve this by implementating a new non-SSE Group that
+ // behaves like GroupSse2Impl (and uses group size 16) in the future.
+-#warning "You should avoid building on a non-SSE platform for a SSE target!"
+ #endif
+ #endif
+ #endif
