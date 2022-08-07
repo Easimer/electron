@@ -10,11 +10,8 @@
 #include "base/i18n/rtl.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "electron/buildflags/buildflags.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "shell/browser/native_window_views.h"
 #include "shell/browser/ui/autofill_popup.h"
-#include "shell/common/api/api.mojom.h"
-#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/display/display.h"
@@ -160,10 +157,15 @@ gfx::Rect CalculatePopupBounds(const gfx::Size& desired_size,
   return bubble_bounds;
 }
 
-AutofillPopup::AutofillPopup() {
-  bold_font_list_ = gfx::FontList().DeriveWithWeight(gfx::Font::Weight::BOLD);
+AutofillPopup::AutofillPopup(
+    const mojo::AssociatedRemote<mojom::ElectronAutofillAgent>& agent,
+    bool offscreen)
+      : autofill_agent_(std::move(agent)), offscreen_(offscreen) {
+  std::string font_description = "Helvetica, Normal 12px";
+  bold_font_list_ =
+      gfx::FontList(font_description).DeriveWithWeight(gfx::Font::Weight::BOLD);
   smaller_font_list_ =
-      gfx::FontList().DeriveWithSizeDelta(kSmallerFontSizeDelta);
+      gfx::FontList(font_description).DeriveWithSizeDelta(kSmallerFontSizeDelta);
 }
 
 AutofillPopup::~AutofillPopup() {
@@ -172,7 +174,6 @@ AutofillPopup::~AutofillPopup() {
 
 void AutofillPopup::CreateView(content::RenderFrameHost* frame_host,
                                content::RenderFrameHost* embedder_frame_host,
-                               bool offscreen,
                                views::View* parent,
                                const gfx::RectF& r) {
   Hide();
@@ -182,7 +183,6 @@ void AutofillPopup::CreateView(content::RenderFrameHost* frame_host,
 
   gfx::Vector2d height_offset(0, element_bounds_.height());
   gfx::Point menu_position(element_bounds_.origin() + height_offset);
-  views::View::ConvertPointToScreen(parent, &menu_position);
   popup_bounds_ = gfx::Rect(menu_position, element_bounds_.size());
 
   parent_ = parent;
@@ -191,10 +191,10 @@ void AutofillPopup::CreateView(content::RenderFrameHost* frame_host,
   view_ = new AutofillPopupView(this, parent->GetWidget());
 
 #if BUILDFLAG(ENABLE_OSR)
-  if (offscreen) {
-    auto* rwhv = frame_host->GetView();
+  if (offscreen_) {
+    auto* rwhv = frame_host->GetMainFrame()->GetView();
     if (embedder_frame_host != nullptr) {
-      rwhv = embedder_frame_host->GetView();
+      rwhv = embedder_frame_host->GetMainFrame()->GetView();
     }
 
     auto* osr_rwhv = static_cast<OffScreenRenderWidgetHostView*>(rwhv);
@@ -230,40 +230,33 @@ void AutofillPopup::SetItems(const std::vector<std::u16string>& values,
 }
 
 void AutofillPopup::AcceptSuggestion(int index) {
-  mojo::AssociatedRemote<mojom::ElectronAutofillAgent> autofill_agent;
-  frame_host_->GetRemoteAssociatedInterfaces()->GetInterface(&autofill_agent);
-  autofill_agent->AcceptDataListSuggestion(GetValueAt(index));
+  autofill_agent_->AcceptDataListSuggestion(GetValueAt(index));
 }
 
 void AutofillPopup::UpdatePopupBounds() {
   DCHECK(parent_);
-  gfx::Point origin(element_bounds_.origin());
-  views::View::ConvertPointToScreen(parent_, &origin);
+  gfx::Point frame_origin = static_cast<content::RenderWidgetHostViewBase*>(
+      frame_host_->GetView())->GetViewBounds().origin();
+  gfx::Point origin(element_bounds_.origin() + frame_origin.OffsetFromOrigin());
 
   gfx::Rect bounds(origin, element_bounds_.size());
-  gfx::Rect window_bounds = parent_->GetBoundsInScreen();
+  gfx::Rect window_bounds = static_cast<content::RenderWidgetHostViewBase*>(
+      frame_host_->GetMainFrame()->GetView())->GetViewBounds();
+
+  LOG(INFO) << window_bounds.ToString();
 
   gfx::Size preferred_size =
       gfx::Size(GetDesiredPopupWidth(), GetDesiredPopupHeight());
+  bool horizontally_centered = base::FeatureList::IsEnabled(
+          autofill::features::kAutofillCenterAlignedSuggestions);
 
-  if (base::FeatureList::IsEnabled(
-          autofill::features::kAutofillCenterAlignedSuggestions)) {
-    popup_bounds_ = CalculatePopupBounds(preferred_size, window_bounds, bounds,
-                                         base::i18n::IsRTL(), true);
-    CalculatePopupXAndWidthHorizontallyCentered(
-        preferred_size.width(), window_bounds, element_bounds_,
-        base::i18n::IsRTL(), &popup_bounds_);
-  } else {
-    popup_bounds_ = CalculatePopupBounds(preferred_size, window_bounds, bounds,
-                                         base::i18n::IsRTL(), false);
-  }
+  popup_bounds_ = CalculatePopupBounds(preferred_size, window_bounds, bounds,
+                                       base::i18n::IsRTL(),
+                                       horizontally_centered);
 }
 
 gfx::Rect AutofillPopup::popup_bounds_in_view() {
-  gfx::Point origin(popup_bounds_.origin());
-  views::View::ConvertPointFromScreen(parent_, &origin);
-
-  return gfx::Rect(origin, popup_bounds_.size());
+  return popup_bounds_;
 }
 
 void AutofillPopup::OnViewBoundsChanged(views::View* view) {

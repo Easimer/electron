@@ -224,7 +224,7 @@ void AutofillPopupView::DoUpdateBoundsAndRedrawPopup() {
   if (!popup_)
     return;
 
-  GetWidget()->SetBounds(popup_->popup_bounds_);
+  GetWidget()->SetBounds(popup_->popup_bounds_in_view());
 #if BUILDFLAG(ENABLE_OSR)
   if (view_proxy_.get()) {
     view_proxy_->SetBounds(popup_->popup_bounds_in_view());

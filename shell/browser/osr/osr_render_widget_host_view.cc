@@ -35,6 +35,8 @@
 #include "content/public/browser/gpu_data_manager.h"
 #include "content/public/browser/render_process_host.h"
 #include "gpu/command_buffer/client/gl_helper.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
+#include "gpu/command_buffer/common/shared_image_usage.h"
 #include "media/base/video_frame.h"
 #include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
@@ -1030,8 +1032,72 @@ void OffScreenRenderWidgetHostView::OnPopupPaint(const gfx::Rect& damage_rect) {
 
 void OffScreenRenderWidgetHostView::OnProxyViewPaint(
     const gfx::Rect& damage_rect) {
-  CompositeFrame(gfx::ToEnclosingRect(
-      ConvertRectToPixels(damage_rect, GetScaleFactor())));
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+
+  SkBitmap frame;
+  frame.allocN32Pixels(SizeInPixels().width(), SizeInPixels().height(), false);
+  cc::SkiaPaintCanvas paint_canvas(frame);
+  gfx::Canvas canvas(&paint_canvas, 1.0f);
+
+  auto transform = gfx::Transform(
+    1, 0, 0, 0,
+    0, -1, 0, SizeInPixels().height(),
+    0, 0, 1, 0,
+    0, 0, 0, 1
+  );
+
+  canvas.Transform(transform);
+
+  for (auto* proxy_view : proxy_views_) {
+    gfx::Rect rect_in_pixels = proxy_view->GetBounds();
+
+    if (!proxy_view->GetBitmap()->drawsNothing()) {
+      gfx::ImageSkia image(gfx::ImageSkiaRep(*proxy_view->GetBitmap(), 1.0f));
+      canvas.DrawImageInt(image,
+                          rect_in_pixels.origin().x(),
+                          rect_in_pixels.origin().y());
+    }
+  }
+
+  void* pixel_data = frame.getPixels();
+  auto pixel_size = frame.computeByteSize();
+
+  base::span<const uint8_t> pixels =
+      base::make_span(reinterpret_cast<const uint8_t*>(pixel_data), pixel_size);
+  auto size = gfx::Size(frame.width(), frame.height());
+
+  constexpr uint32_t kUsage = gpu::SHARED_IMAGE_USAGE_GLES2 |
+                              gpu::SHARED_IMAGE_USAGE_GLES2_FRAMEBUFFER_HINT |
+                              gpu::SHARED_IMAGE_USAGE_DISPLAY;
+
+  auto mailbox = sii->CreateSharedImage(
+      viz::ResourceFormat::RGBA_8888, size, gfx::ColorSpace(),
+      kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType, kUsage, pixels);
+  auto sync_token = sii->GenVerifiedSyncToken();
+
+  struct MailboxHolder {
+    gpu::Mailbox mailbox;
+  };
+
+  OnPopupTexturePaint(
+      mailbox,
+      sync_token,
+      gfx::Rect(SizeInPixels()),
+      gfx::Rect(SizeInPixels()),
+      [] (void* context, void* token) {
+        auto* context_factory = content::GetContextFactory();
+        auto context_provider = context_factory->SharedMainThreadContextProvider();
+        auto* sii = context_provider->SharedImageInterface();
+
+        if (context) {
+          sii->DestroySharedImage(
+              *reinterpret_cast<gpu::SyncToken*>(token),
+              reinterpret_cast<MailboxHolder*>(context)->mailbox);
+        }
+      },
+      new MailboxHolder{std::move(mailbox)});
 }
 
 void OffScreenRenderWidgetHostView::CompositeFrame(
@@ -1119,7 +1185,7 @@ void OffScreenRenderWidgetHostView::RemoveViewProxy(OffscreenViewProxy* proxy) {
 void OffScreenRenderWidgetHostView::ProxyViewDestroyed(
     OffscreenViewProxy* proxy) {
   proxy_views_.erase(proxy);
-  CompositeFrame(gfx::Rect(GetRequestedRendererSize()));
+  OnProxyViewPaint(gfx::Rect(size_));
 }
 
 void OffScreenRenderWidgetHostView::SetPainting(bool painting) {

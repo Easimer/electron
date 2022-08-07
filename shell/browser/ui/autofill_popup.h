@@ -8,7 +8,9 @@
 #include <vector>
 
 #include "content/public/browser/render_frame_host.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "shell/browser/ui/views/autofill_popup_view.h"
+#include "shell/common/api/api.mojom.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/font_list.h"
 #include "ui/views/view.h"
@@ -20,7 +22,9 @@ class AutofillPopupView;
 
 class AutofillPopup : public views::ViewObserver {
  public:
-  AutofillPopup();
+  AutofillPopup(
+      const mojo::AssociatedRemote<mojom::ElectronAutofillAgent>& agent,
+      bool offscreen);
   ~AutofillPopup() override;
 
   // disable copy
@@ -29,7 +33,6 @@ class AutofillPopup : public views::ViewObserver {
 
   void CreateView(content::RenderFrameHost* render_frame,
                   content::RenderFrameHost* embedder_frame,
-                  bool offscreen,
                   views::View* parent,
                   const gfx::RectF& bounds);
   void Hide();
@@ -86,6 +89,10 @@ class AutofillPopup : public views::ViewObserver {
 
   // The parent view that the popup view shows on. Weak ref.
   views::View* parent_ = nullptr;
+
+  const mojo::AssociatedRemote<mojom::ElectronAutofillAgent>& autofill_agent_;
+
+  bool offscreen_;
 };
 
 }  // namespace electron

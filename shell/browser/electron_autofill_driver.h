@@ -42,6 +42,7 @@ class AutofillDriver : public mojom::ElectronAutofillDriver {
 #endif
 
   mojo::AssociatedReceiver<mojom::ElectronAutofillDriver> receiver_{this};
+  mojo::AssociatedRemote<mojom::ElectronAutofillAgent> autofill_agent_;
 };
 
 }  // namespace electron
