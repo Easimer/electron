@@ -1246,7 +1246,8 @@ bool OffScreenRenderWidgetHostView::UsingAutoScaleFactor() const {
 
 void OffScreenRenderWidgetHostView::SetManualScaleFactor(float scale_factor) {
   manual_device_scale_factor_ = scale_factor;
-  SetRootLayerSize(false);
+  SynchronizeVisualProperties(cc::DeadlinePolicy::UseExistingDeadline(),
+                              absl::nullopt);
 }
 
 float OffScreenRenderWidgetHostView::GetScaleFactor() const {
@@ -1346,6 +1347,7 @@ bool OffScreenRenderWidgetHostView::ResizeRootLayer() {
     // from ReleaseResizeHold().
     pending_resize_ = true;
   }
+
   return false;
 }
 
