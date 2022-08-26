@@ -4416,7 +4416,7 @@ void WebContents::MakeDragImageMailbox(gfx::Point const& position) {
                               gpu::SHARED_IMAGE_USAGE_DISPLAY;
 
   drag_image_mailbox_ = sii->CreateSharedImage(
-      viz::ResourceFormat::RGBA_8888, size, gfx::ColorSpace(),
+      viz::ResourceFormat::BGRA_8888, size, gfx::ColorSpace(),
       kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType, kUsage, pixels);
   drag_image_sync_token_ = sii->GenVerifiedSyncToken();
 }
