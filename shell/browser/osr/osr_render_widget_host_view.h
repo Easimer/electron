@@ -75,7 +75,8 @@ typedef base::RepeatingCallback<void(const gpu::Mailbox&,
 
 class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
                                       public ui::CompositorDelegate,
-                                      public OffscreenViewProxyObserver {
+                                      public OffscreenViewProxyObserver,
+                                      public OffScreenHostDisplayClient::Observer {
  public:
   class Initializer {
    public:
@@ -197,6 +198,9 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   bool IsOffscreen() const override;
   std::unique_ptr<viz::HostDisplayClient> CreateHostDisplayClient(
       ui::Compositor* compositor) override;
+
+  // OffScreenHostDisplayClient::Observer
+  void OffScreenHostDisplayClientWillDelete() override;
 
   bool InstallTransparency();
 

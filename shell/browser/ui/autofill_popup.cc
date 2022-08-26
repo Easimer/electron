@@ -243,8 +243,6 @@ void AutofillPopup::UpdatePopupBounds() {
   gfx::Rect window_bounds = static_cast<content::RenderWidgetHostViewBase*>(
       frame_host_->GetMainFrame()->GetView())->GetViewBounds();
 
-  LOG(INFO) << window_bounds.ToString();
-
   gfx::Size preferred_size =
       gfx::Size(GetDesiredPopupWidth(), GetDesiredPopupHeight());
   bool horizontally_centered = base::FeatureList::IsEnabled(

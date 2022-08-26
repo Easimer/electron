@@ -9,6 +9,7 @@
 
 #include "base/callback.h"
 #include "base/memory/shared_memory_mapping.h"
+#include "base/observer_list.h"
 #include "components/viz/common/resources/single_release_callback.mojom.h"
 #include "components/viz/host/host_display_client.h"
 #include "services/viz/privileged/mojom/compositing/layered_window_updater.mojom.h"
@@ -61,11 +62,19 @@ class LayeredWindowUpdater : public viz::mojom::LayeredWindowUpdater {
 
 class OffScreenHostDisplayClient : public viz::HostDisplayClient {
  public:
+   struct Observer : public base::CheckedObserver {
+     virtual void OffScreenHostDisplayClientWillDelete() = 0;
+   };
+
    OffScreenHostDisplayClient(gfx::AcceleratedWidget widget,
                               OnPaintCallback callback,
                               OnTexturePaintCallbackInternal texture_callback,
                               OnBackingTextureCreatedInternal backing_callback);
   ~OffScreenHostDisplayClient() override;
+
+  bool HasObserver(Observer* observer) const;
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
 
   // disable copy
   OffScreenHostDisplayClient(const OffScreenHostDisplayClient&) = delete;
@@ -105,6 +114,7 @@ class OffScreenHostDisplayClient : public viz::HostDisplayClient {
   gfx::Rect texture_rect_;
   gpu::Mailbox mailbox_;
   gpu::SyncToken token_;
+  base::ObserverList<Observer> observers_;
 };
 
 }  // namespace electron

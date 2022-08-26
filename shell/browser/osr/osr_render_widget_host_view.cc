@@ -514,8 +514,6 @@ void OffScreenRenderWidgetHostView::InitAsPopup(
   SetBounds(pos);
 
   Show();
-  SetPainting(true);
-  Invalidate();
 }
 
 void OffScreenRenderWidgetHostView::UpdateCursor(const content::WebCursor&) {}
@@ -727,8 +725,13 @@ OffScreenRenderWidgetHostView::CreateHostDisplayClient(
                           weak_ptr_factory_.GetWeakPtr()),
       base::BindRepeating(&OffScreenRenderWidgetHostView::OnBackingTextureCreated,
                           weak_ptr_factory_.GetWeakPtr()));
+  host_display_client_->AddObserver(this);
   host_display_client_->SetActive(IsPainting());
   return base::WrapUnique(host_display_client_);
+}
+
+void OffScreenRenderWidgetHostView::OffScreenHostDisplayClientWillDelete() {
+  host_display_client_ = nullptr;
 }
 
 bool OffScreenRenderWidgetHostView::InstallTransparency() {

@@ -90,7 +90,25 @@ OffScreenHostDisplayClient::OffScreenHostDisplayClient(
       callback_(callback),
       texture_callback_(texture_callback),
       backing_callback_(backing_callback) {}
-OffScreenHostDisplayClient::~OffScreenHostDisplayClient() = default;
+
+OffScreenHostDisplayClient::~OffScreenHostDisplayClient() {
+  for (Observer& observer : observers_) {
+    observer.OffScreenHostDisplayClientWillDelete();
+  }
+}
+
+bool OffScreenHostDisplayClient::HasObserver(Observer* observer) const {
+  return observers_.HasObserver(observer);
+}
+
+void OffScreenHostDisplayClient::AddObserver(Observer* observer) {
+  observers_.AddObserver(observer);
+}
+
+void OffScreenHostDisplayClient::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
+}
+
 
 void OffScreenHostDisplayClient::SetActive(bool active) {
   active_ = active;
