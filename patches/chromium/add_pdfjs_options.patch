@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Mon, 19 Sep 2022 22:36:29 +0200
+Subject: feat: add pdfjs options to pdf viewer
+
+This adds pdfjs options to pdf viewer.
+
+diff --git a/chrome/browser/resources/pdf/open_pdf_params_parser.js b/chrome/browser/resources/pdf/open_pdf_params_parser.js
+index 10e4531c0563ec3bd92f6e2cbea2b3e8b361c68d..b0e1ce55d6144123be708586df5f0492fe3d3f1b 100644
+--- a/chrome/browser/resources/pdf/open_pdf_params_parser.js
++++ b/chrome/browser/resources/pdf/open_pdf_params_parser.js
+@@ -61,14 +61,59 @@ export class OpenPdfParamsParser {
+    */
+   parseZoomParam_(paramValue) {
+     const paramValueSplit = paramValue.split(',');
+-    if (paramValueSplit.length !== 1 && paramValueSplit.length !== 3) {
++    if (paramValueSplit.length !== 1 &&
++        paramValueSplit.length !== 3 &&
++        paramValueSplit.length !== 5) {
+       return {};
+     }
+ 
+     // User scale of 100 means zoom value of 100% i.e. zoom factor of 1.0.
+     const zoomFactor = parseFloat(paramValueSplit[0]) / 100;
+     if (Number.isNaN(zoomFactor)) {
+-      return {};
++      switch (paramValueSplit[0]) {
++        case 'page-fit':
++        case 'fit':
++        case 'fitb':
++          return { view: FittingType.FIT_TO_PAGE };
++        case 'page-width':
++        case 'fith':
++        case 'fitbh':
++          return { view: FittingType.FIT_TO_WIDTH };
++        case 'page-height':
++        case 'fitv':
++        case 'fitbv':
++          return { view: FittingType.FIT_TO_HEIGHT };
++        case 'fitr': {
++          const params = {};
++
++          if (paramValueSplit.length === 5) {
++            let x1 = parseFloat(paramValueSplit[1]);
++            let y1 = parseFloat(paramValueSplit[2]);
++            let x2 = parseFloat(paramValueSplit[3]);
++            let y2 = parseFloat(paramValueSplit[4]);
++            if (!Number.isNaN(x1) && !Number.isNaN(y1) && !Number.isNaN(x2) &&
++                !Number.isNaN(y2)) {
++              if (x1 > x2) {
++                [x1, x2] = [x2, x1];
++              }
++              if (y1 > y2) {
++                [y1, y2] = [y2, y1];
++              }
++              const rectSize = {width: x2 - x1, height: y2 - y1};
++              params['position'] = {x: x1, y: y1};
++              const zoom = this.calculateRectZoomLevel_(rectSize);
++              if (zoom !== 0) {
++                params['zoom'] = zoom;
++              }
++            }
++            return params;
++          } else {
++            return params;
++          }
++        }
++        default:
++          return {};
++      }
+     }
+ 
+     // Handle #zoom=scale.
+@@ -219,6 +264,15 @@ export class OpenPdfParamsParser {
+     return this.parseUrlParams_(url).get('toolbar') !== '0';
+   }
+ 
++  /**
++   * @param {string} url that needs to be parsed.
++   * @return {boolean} Whether the sidenav UI element should be shown.
++   */
++  shouldShowSidenav(url) {
++    const result = this.parseUrlParams_(url).get('sidenav');
++    return result !== null && result === '1';
++  }
++
+   /**
+    * Parse PDF url parameters. These parameters are mentioned in the url
+    * and specify actions to be performed when opening pdf files.
+diff --git a/chrome/browser/resources/pdf/pdf_viewer.js b/chrome/browser/resources/pdf/pdf_viewer.js
+index 3cd563ed13ab9bd8fa084f54eb8f112b66399eb9..8a2ec58f32332ccdf72328da9618b38154390cce 100644
+--- a/chrome/browser/resources/pdf/pdf_viewer.js
++++ b/chrome/browser/resources/pdf/pdf_viewer.js
+@@ -273,13 +273,8 @@ export class PDFViewerElement extends PDFViewerBaseElement {
+   constructor() {
+     super();
+ 
+-    // TODO(dpapad): Add tests after crbug.com/1111459 is fixed.
+-    this.sidenavCollapsed_ = Boolean(Number.parseInt(
+-        /** @type {string} */ (LocalStorageProxyImpl.getInstance().getItem(
+-            LOCAL_STORAGE_SIDENAV_COLLAPSED_KEY)),
+-        10));
+-
+-    // Non-Polymer properties
++    /** @private {boolean} */
++    this.sidenavCollapsed_ = true;
+ 
+     /** @type {number} */
+     this.beepCount = 0;
+@@ -345,6 +340,8 @@ export class PDFViewerElement extends PDFViewerBaseElement {
+     if (this.toolbarEnabled_) {
+       this.getToolbar_().hidden = false;
+     }
++    this.sidenavCollapsed_ =
++        !this.paramsParser.shouldShowSidenav(this.originalUrl);
+ 
+     this.navigator_ = new PdfNavigator(
+         this.originalUrl, this.viewport,

@@ -117,3 +117,4 @@ introduce_ozoneplatform_electron_can_call_x11_property.patch
 make_gtk_getlibgtk_public.patch
 feat_add_command_buffer_demo.patch
 feat_hardware_accelerated_offscreen_rendering.patch
+add_pdfjs_options.patch
