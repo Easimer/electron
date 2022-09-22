@@ -27,6 +27,7 @@
 #include "base/values.h"
 #include "cc/paint/skia_paint_canvas.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/pdf/pdf_frame_util.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/views/eye_dropper/eye_dropper.h"
 #include "chrome/common/pref_names.h"
@@ -64,6 +65,7 @@
 #include "content/public/common/webplugininfo.h"
 #include "electron/buildflags/buildflags.h"
 #include "electron/shell/common/api/api.mojom.h"
+#include "extensions/common/constants.h"
 #include "gin/arguments.h"
 #include "gin/data_object_builder.h"
 #include "gin/handle.h"
@@ -3109,11 +3111,42 @@ void WebContents::OnDropEnded(blink::WebMouseEvent event) {
   }
 }
 
+content::RenderFrameHost* FindPdfChildFrame(
+    content::RenderFrameHost* rfh, std::string query) {
+  content::RenderFrameHost* pdf_rfh = nullptr;
+
+  rfh->ForEachRenderFrameHost(base::BindRepeating(
+    [](content::RenderFrameHost** pdf_rfh, std::string query,
+       content::RenderFrameHost* rfh) {
+      auto lastURL = rfh->GetLastCommittedURL();
+
+      if (lastURL.scheme() == extensions::kExtensionScheme &&
+          lastURL.host() == extension_misc::kPdfExtensionId &&
+          lastURL.query() == query) {
+        *pdf_rfh = rfh;
+        return content::RenderFrameHost::FrameIterationAction::kStop;
+      } else {
+        return content::RenderFrameHost::FrameIterationAction::kContinue;
+      }
+    }, &pdf_rfh, query
+  ));
+
+  return pdf_rfh;
+}
+
 void WebContents::SendInputEvent(v8::Isolate* isolate,
                                  v8::Local<v8::Value> input_event) {
   content::RenderFrameHost* focused_frame = web_contents()->GetFocusedFrame();
   if (!focused_frame)
     focused_frame = web_contents()->GetMainFrame();
+
+  content::RenderFrameHost* pdf_rfh =
+      FindPdfChildFrame(focused_frame->GetMainFrame(),
+                        focused_frame->GetLastCommittedURL().query());
+  if (pdf_rfh) {
+    focused_frame = pdf_rfh;
+  }
+
   content::RenderWidgetHostView* view = focused_frame->GetView();
   if (!view)
     return;

@@ -1,10 +1,29 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Benedek Heilig <benecene@gmail.com>
-Date: Mon, 19 Sep 2022 22:36:29 +0200
+Date: Thu, 22 Sep 2022 15:32:01 +0200
 Subject: feat: add pdfjs options to pdf viewer
 
 This adds pdfjs options to pdf viewer.
 
+diff --git a/chrome/browser/resources/pdf/elements/viewer-thumbnail-bar.js b/chrome/browser/resources/pdf/elements/viewer-thumbnail-bar.js
+index 05f060c05956f8ca33856c1971cf42974091e11f..d7a00b1102264b2e7cd4e66fd0baef01b7e84c2b 100644
+--- a/chrome/browser/resources/pdf/elements/viewer-thumbnail-bar.js
++++ b/chrome/browser/resources/pdf/elements/viewer-thumbnail-bar.js
+@@ -228,14 +228,6 @@ export class ViewerThumbnailBarElement extends PolymerElement {
+       this.shadowRoot.querySelector('viewer-thumbnail:last-of-type').focus({
+         preventScroll: true
+       });
+-    } else if (keyboardEvent.key === 'ArrowRight') {
+-      // Prevent default arrow scroll behavior.
+-      keyboardEvent.preventDefault();
+-      this.clickThumbnailForPage(this.activePage + 1);
+-    } else if (keyboardEvent.key === 'ArrowLeft') {
+-      // Prevent default arrow scroll behavior.
+-      keyboardEvent.preventDefault();
+-      this.clickThumbnailForPage(this.activePage - 1);
+     }
+   }
+ }
 diff --git a/chrome/browser/resources/pdf/open_pdf_params_parser.js b/chrome/browser/resources/pdf/open_pdf_params_parser.js
 index 10e4531c0563ec3bd92f6e2cbea2b3e8b361c68d..b0e1ce55d6144123be708586df5f0492fe3d3f1b 100644
 --- a/chrome/browser/resources/pdf/open_pdf_params_parser.js
@@ -116,3 +135,181 @@ index 3cd563ed13ab9bd8fa084f54eb8f112b66399eb9..8a2ec58f32332ccdf72328da9618b381
  
      this.navigator_ = new PdfNavigator(
          this.originalUrl, this.viewport,
+diff --git a/chrome/browser/resources/pdf/viewport.js b/chrome/browser/resources/pdf/viewport.js
+index e81024da62320e6a30350764a6bb65845d828900..f0020f116652bf7e11c0f71e1301016fc16181c2 100644
+--- a/chrome/browser/resources/pdf/viewport.js
++++ b/chrome/browser/resources/pdf/viewport.js
+@@ -1114,25 +1114,10 @@ export class Viewport {
+     }
+ 
+     const isDown = e.key === 'PageDown' || (e.key === ' ' && !e.shiftKey);
+-    // Go to the previous/next page if we are fit-to-page or fit-to-height.
+-    if (this.isPagedMode_()) {
+-      isDown ? this.goToNextPage() : this.goToPreviousPage();
+-      // Since we do the movement of the page.
+-      e.preventDefault();
+-    } else if (isCrossFrameKeyEvent(e)) {
+-      // Web scrolls by a fraction of the viewport height. Use the same
+-      // fractional value as `cc::kMinFractionToStepWhenPaging` in
+-      // cc/input/scroll_utils.h. The values must be kept in sync.
+-      const MIN_FRACTION_TO_STEP_WHEN_PAGING = 0.875;
+-      const scrollOffset = (isDown ? 1 : -1) * this.size.height *
+-          MIN_FRACTION_TO_STEP_WHEN_PAGING;
+-      this.setPosition(
+-          {
+-            x: this.position.x,
+-            y: this.position.y + scrollOffset,
+-          },
+-          this.smoothScrolling_);
+-    }
++
++    isDown ? this.goToNextPage() : this.goToPreviousPage();
++    // Since we do the movement of the page.
++    e.preventDefault();
+ 
+     this.window_.dispatchEvent(new CustomEvent('scroll-proceeded-for-testing'));
+   }
+@@ -1176,16 +1161,8 @@ export class Viewport {
+ 
+     // Go to the previous/next page if Presentation mode is on.
+     const isDown = e.key === 'ArrowDown';
+-    if (document.fullscreenElement !== null) {
+-      isDown ? this.goToNextPage() : this.goToPreviousPage();
+-      e.preventDefault();
+-    } else if (isCrossFrameKeyEvent(e)) {
+-      const scrollOffset = (isDown ? 1 : -1) * SCROLL_INCREMENT;
+-      this.setPosition({
+-        x: this.position.x,
+-        y: this.position.y + scrollOffset,
+-      });
+-    }
++    isDown ? this.goToNextPage() : this.goToPreviousPage();
++    e.preventDefault();
+   }
+ 
+   /**
+diff --git a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_attach_helper.cc b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_attach_helper.cc
+index 8f88d239e411841a76f23a659518de4eacbcd031..e1a2a33ea84ed2385837d41b155d0b27dae3f909 100644
+--- a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_attach_helper.cc
++++ b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_attach_helper.cc
+@@ -43,7 +43,7 @@ const char kFullPageMimeHandlerViewHTML[] =
+     "hidden; margin:0px; background-color: rgb(%d, %d, %d);'><embed "
+     "name='%s' "
+     "style='position:absolute; left: 0; top: 0;'width='100%%' height='100%%'"
+-    " src='about:blank' type='%s' "
++    " src='about:blank?%s' type='%s' "
+     "internalid='%s'></body></html>";
+ const uint32_t kFullPageMimeHandlerViewDataPipeSize = 512U;
+ 
+@@ -98,7 +98,8 @@ bool MimeHandlerViewAttachHelper::OverrideBodyForInterceptedResponse(
+   std::string token = base::UnguessableToken::Create().ToString();
+   auto html_str = base::StringPrintf(
+       kFullPageMimeHandlerViewHTML, SkColorGetR(color), SkColorGetG(color),
+-      SkColorGetB(color), token.c_str(), mime_type.c_str(), token.c_str());
++      SkColorGetB(color), token.c_str(), token.c_str(), mime_type.c_str(),
++      token.c_str());
+   payload->assign(html_str);
+   *data_pipe_size = kFullPageMimeHandlerViewDataPipeSize;
+   content::GetUIThreadTaskRunner({})->PostTaskAndReply(
+diff --git a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.cc b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.cc
+index 862553f4fd1d9e548845baf2115557e80640d331..cf6e6ffc034aea122fc1050a179bf4504e72e360 100644
+--- a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.cc
++++ b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.cc
+@@ -11,5 +11,6 @@ const char kAPINamespace[] = "mimeHandlerViewGuestInternal";
+ 
+ // Other.
+ const char kViewId[] = "viewId";
++const char kInternalId[] = "internalId";
+ 
+ }  // namespace mime_handler_view
+diff --git a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.h b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.h
+index 6f0f530d7a0497e93599e97895798064c30601a8..76e3540f5ec02102556ab01e7bcf18b1a35ab459 100644
+--- a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.h
++++ b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_constants.h
+@@ -14,6 +14,7 @@ extern const char kAPINamespace[];
+ 
+ // Other.
+ extern const char kViewId[];
++extern const char kInternalId[];
+ 
+ }  // namespace mime_handler_view
+ 
+diff --git a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_embedder.cc b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_embedder.cc
+index f61ca6d393953b0abfe6d0c6d4a650b06cd65065..d57b59d601047854bc375680098a375754a52020 100644
+--- a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_embedder.cc
++++ b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_embedder.cc
+@@ -181,6 +181,7 @@ void MimeHandlerViewEmbedder::CreateMimeHandlerViewGuest(
+   }
+   base::DictionaryValue create_params;
+   create_params.SetStringKey(mime_handler_view::kViewId, stream_id_);
++  create_params.SetStringKey(mime_handler_view::kInternalId, internal_id_);
+   manager->CreateGuest(
+       MimeHandlerViewGuest::Type, web_contents(), create_params,
+       base::BindOnce(&MimeHandlerViewEmbedder::DidCreateMimeHandlerViewGuest,
+diff --git a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.cc b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.cc
+index a1c6c5a4b507bbf50668d7ed2febe97aca942c1d..ea7ddc6ec3f3a4b430102ab6ceddac54fe250088 100644
+--- a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.cc
++++ b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.cc
+@@ -76,6 +76,16 @@ StreamContainer::TakeTransferrableURLLoader() {
+   return std::move(transferrable_loader_);
+ }
+ 
++GURL StreamContainer::handler_url() const {
++  if (internal_id_.empty()) {
++    return handler_url_;
++  } else {
++    GURL::Replacements replacements;
++    replacements.SetQueryStr(internal_id_.c_str());
++    return handler_url_.ReplaceComponents(replacements);
++  }
++}
++
+ // static
+ const char MimeHandlerViewGuest::Type[] = "mimehandler";
+ 
+@@ -193,6 +203,12 @@ void MimeHandlerViewGuest::CreateWebContents(
+     return;
+   }
+ 
++  const std::string* internal_id =
++      create_params.FindStringKey(mime_handler_view::kInternalId);
++  if (internal_id && !internal_id->empty()) {
++    stream_->set_internal_id(*internal_id);
++  }
++
+   // Use the mime handler extension's SiteInstance to create the guest so it
+   // goes under the same process as the extension.
+   ProcessManager* process_manager = ProcessManager::Get(browser_context());
+diff --git a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h
+index f401659a81d4aeaf71039d71eb8fec4844497334..0e0b03c5e4203842d8cf368c33c7ff8cf74d1157 100644
+--- a/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h
++++ b/extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h
+@@ -46,7 +46,7 @@ class StreamContainer {
+ 
+   bool embedded() const { return embedded_; }
+   int tab_id() const { return tab_id_; }
+-  GURL handler_url() const { return handler_url_; }
++  GURL handler_url() const;
+   std::string extension_id() const { return extension_id_; }
+ 
+   const std::string& mime_type() const { return mime_type_; }
+@@ -64,6 +64,10 @@ class StreamContainer {
+     pdf_plugin_attributes_ = std::move(pdf_plugin_attributes);
+   }
+ 
++  void set_internal_id(const std::string& id) {
++    internal_id_ = id;
++  }
++
+  private:
+   const bool embedded_;
+   const int tab_id_;
+@@ -77,6 +81,8 @@ class StreamContainer {
+   scoped_refptr<net::HttpResponseHeaders> response_headers_;
+   mime_handler::PdfPluginAttributesPtr pdf_plugin_attributes_;
+ 
++  std::string internal_id_ = "";
++
+   base::WeakPtrFactory<StreamContainer> weak_factory_{this};
+ };
+ 
