@@ -1975,6 +1975,12 @@ void WebContents::DidFinishNavigation(
   // proceed with setting the new title
   if (entry && (entry->GetTransitionType() & ui::PAGE_TRANSITION_FORWARD_BACK))
     WebContents::TitleWasSet(entry);
+
+  if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+    skip_paint_until_load_ = false;
+#endif
+  }
 }
 
 void WebContents::TitleWasSet(content::NavigationEntry* entry) {
