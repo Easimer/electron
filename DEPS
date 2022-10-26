@@ -79,6 +79,7 @@ vars = {
     False,
   'checkout_clang_tidy':
     True,
+  'angle_revision': 'ea8043b73f934c52084f514a326d4fe36f6ad056',
 }
 
 deps = {

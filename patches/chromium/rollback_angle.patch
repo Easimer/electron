@@ -1,0 +1,373 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Fri, 21 Oct 2022 16:09:31 +0200
+Subject: fix: roll back ANGLE
+
+This patch adjusts code to fit an older ANGLE build.
+
+diff --git a/build/config/ui.gni b/build/config/ui.gni
+index 83ec3d7e226dbbb0d7f2a2d8d009fa88574c2ce7..f5b4f273c06e1504d590496002730947ff5bf656 100644
+--- a/build/config/ui.gni
++++ b/build/config/ui.gni
+@@ -48,6 +48,8 @@ use_atk = is_linux && !is_chromecast && use_glib &&
+ # necessary.
+ use_xvfb_in_this_config =
+     is_linux || (is_chromeos_lacros && !is_chromeos_device)
++
++use_x11 = false
+ #
+ # =============================================
+ #   PLEASE DO NOT ADD MORE FLAGS TO THIS FILE
+diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
+index b533c5eff48c134ea364521a1b9d60624d2ffce4..717e918fe194601f697d4ddf3aa00bdd0e0e831e 100644
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -210,7 +210,7 @@ source_set("browser") {
+     "//storage/browser",
+     "//storage/browser/quota:mojo_bindings",
+     "//storage/common",
+-    "//third_party/angle:angle_version_info",
++    # "//third_party/angle:angle_version_info",
+     "//third_party/blink/public:blink_headers",
+     "//third_party/blink/public:buildflags",
+     "//third_party/blink/public:resources",
+diff --git a/content/browser/gpu/gpu_internals_ui.cc b/content/browser/gpu/gpu_internals_ui.cc
+index 68e34fdf0dfdf8337f8216a2fbe2d95d6b435a2e..2eb830d2d59d9710884e4dea41236a6cc9e16778 100644
+--- a/content/browser/gpu/gpu_internals_ui.cc
++++ b/content/browser/gpu/gpu_internals_ui.cc
+@@ -48,7 +48,6 @@
+ #include "gpu/ipc/host/gpu_memory_buffer_support.h"
+ #include "services/network/public/mojom/content_security_policy.mojom.h"
+ #include "skia/ext/skia_commit_hash.h"
+-#include "third_party/angle/src/common/angle_version_info.h"
+ #include "third_party/skia/include/core/SkMilestone.h"
+ #include "ui/display/display.h"
+ #include "ui/display/screen.h"
+@@ -813,7 +812,7 @@ std::unique_ptr<base::DictionaryValue> GpuMessageHandler::OnRequestClientInfo(
+   dict->SetStringKey("operating_system",
+                      base::SysInfo::OperatingSystemName() + " " +
+                          base::SysInfo::OperatingSystemVersion());
+-  dict->SetStringKey("angle_commit_id", angle::GetANGLECommitHash());
++  dict->SetStringKey("angle_commit_id", "n/a");
+   dict->SetStringKey(
+       "graphics_backend",
+       std::string("Skia/" STRINGIZE(SK_MILESTONE) " " SKIA_COMMIT_HASH));
+diff --git a/gpu/BUILD.gn b/gpu/BUILD.gn
+index ab55814c5ac5eb8ea57922a998043d551d38dc7f..5e7340c3ff110de350270ed976776acfcf85db52 100644
+--- a/gpu/BUILD.gn
++++ b/gpu/BUILD.gn
+@@ -219,7 +219,7 @@ static_library("test_support") {
+   if (use_static_angle) {
+     deps += [ "//third_party/angle:translator" ]
+   } else {
+-    deps += [ "//third_party/angle:translator_gl_d3d_only" ]
++    deps += [ "//third_party/angle:translator" ]
+   }
+ }
+ 
+diff --git a/gpu/command_buffer/service/BUILD.gn b/gpu/command_buffer/service/BUILD.gn
+index bf33c6f8009a8cf1473c916e0ec1d3bb387ff69c..cd469751eb247e228ab754a9c3964e8b6cd9abc9 100644
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -328,7 +328,7 @@ target(link_target_type, "gles2_sources") {
+     "//gpu/vulkan:buildflags",
+     "//skia:buildflags",
+     "//third_party/angle:angle_image_util",
+-    "//third_party/angle:angle_version_info",
++    "//third_party/angle:commit_id",
+     "//third_party/libyuv",
+     "//third_party/protobuf:protobuf_lite",
+     "//third_party/re2",
+@@ -345,7 +345,7 @@ target(link_target_type, "gles2_sources") {
+   if (use_static_angle) {
+     deps += [ "//third_party/angle:translator" ]
+   } else {
+-    deps += [ "//third_party/angle:translator_gl_d3d_only" ]
++    deps += [ "//third_party/angle:translator" ]
+   }
+ 
+   if (use_ozone) {
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder.cc b/gpu/command_buffer/service/gles2_cmd_decoder.cc
+index fdbb6ac44c972685ff97e34f749badf5f9068243..3bbe41086c9ba1d343db6501cb7f38f733dcf349 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder.cc
+@@ -4580,11 +4580,11 @@ bool GLES2DecoderImpl::InitializeShaderTranslator() {
+     // To re-enable the shader
+     // builtins add back SH_EMULATE_GL_BASE_VERTEX_BASE_INSTANCE to
+     // ShCompileOptions in ANGLE
+-    resources.ANGLE_base_vertex_base_instance_shader_builtin =
+-        (draw_instanced_base_vertex_base_instance_explicitly_enabled_ &&
+-         features().webgl_draw_instanced_base_vertex_base_instance) ||
+-        (multi_draw_instanced_base_vertex_base_instance_explicitly_enabled_ &&
+-         features().webgl_multi_draw_instanced_base_vertex_base_instance);
++    // resources.ANGLE_base_vertex_base_instance_shader_builtin =
++    //     (draw_instanced_base_vertex_base_instance_explicitly_enabled_ &&
++    //      features().webgl_draw_instanced_base_vertex_base_instance) ||
++    //     (multi_draw_instanced_base_vertex_base_instance_explicitly_enabled_ &&
++    //      features().webgl_multi_draw_instanced_base_vertex_base_instance);
+   }
+ 
+   if (((shader_spec == SH_WEBGL_SPEC || shader_spec == SH_WEBGL2_SPEC) &&
+diff --git a/gpu/command_buffer/service/memory_program_cache.cc b/gpu/command_buffer/service/memory_program_cache.cc
+index 36a0b760e900242a9f7e593a228baafc73229908..f70d9aee277801520ec9bc577c707f4ec686ff64 100644
+--- a/gpu/command_buffer/service/memory_program_cache.cc
++++ b/gpu/command_buffer/service/memory_program_cache.cc
+@@ -43,7 +43,7 @@ void FillShaderVariableProto(
+     ShaderVariableProto* field = proto->add_fields();
+     FillShaderVariableProto(field, variable.fields[ii]);
+   }
+-  proto->set_struct_name(variable.getStructName());
++  proto->set_struct_name(variable.structName);
+ }
+ 
+ void FillShaderAttributeProto(
+@@ -134,7 +134,7 @@ void RetrieveShaderVariableInfo(
+   variable->fields.resize(proto.fields_size());
+   for (int ii = 0; ii < proto.fields_size(); ++ii)
+     RetrieveShaderVariableInfo(proto.fields(ii), &(variable->fields[ii]));
+-  variable->setStructName(proto.struct_name());
++  variable->structName = proto.struct_name();
+ }
+ 
+ void RetrieveShaderAttributeInfo(
+diff --git a/gpu/command_buffer/service/program_cache.cc b/gpu/command_buffer/service/program_cache.cc
+index 523069984a6776067890f0f773c2d39aeca9579c..50858c6b0820425a9737d26215a1413e80e8aa88 100644
+--- a/gpu/command_buffer/service/program_cache.cc
++++ b/gpu/command_buffer/service/program_cache.cc
+@@ -11,7 +11,7 @@
+ 
+ #include "base/metrics/histogram_macros.h"
+ #include "gpu/command_buffer/service/shader_manager.h"
+-#include "third_party/angle/src/common/angle_version_info.h"
++#include "third_party/angle/src/common/version.h"
+ 
+ namespace gpu {
+ namespace gles2 {
+@@ -155,7 +155,7 @@ void ProgramCache::ComputeProgramHash(
+     char* result) const {
+   const size_t shader0_size = kHashLength;
+   const size_t shader1_size = kHashLength;
+-  const size_t angle_commit_size = angle::GetANGLECommitHashSize();
++  const size_t angle_commit_size = ANGLE_COMMIT_HASH_SIZE;
+   const size_t map_size = CalculateMapSize(bind_attrib_location_map);
+   const size_t var_size = CalculateVaryingsSize(transform_feedback_varyings);
+   const size_t total_size = shader0_size + shader1_size + angle_commit_size
+@@ -165,7 +165,7 @@ void ProgramCache::ComputeProgramHash(
+   memcpy(buffer.get(), hashed_shader_0, shader0_size);
+   memcpy(&buffer[shader0_size], hashed_shader_1, shader1_size);
+   size_t current_pos = shader0_size + shader1_size;
+-  memcpy(&buffer[current_pos], angle::GetANGLECommitHash(), angle_commit_size);
++  memcpy(&buffer[current_pos], ANGLE_COMMIT_HASH, angle_commit_size);
+   current_pos += angle_commit_size;
+   if (map_size != 0) {
+     // copy our map
+diff --git a/gpu/command_buffer/service/shared_image_factory.cc b/gpu/command_buffer/service/shared_image_factory.cc
+index 6ce90bcc5ecde92c44f321b9c4cfb0f89505e3b6..0c19322196e73acc97cc45a0b21c703c967f0417 100644
+--- a/gpu/command_buffer/service/shared_image_factory.cc
++++ b/gpu/command_buffer/service/shared_image_factory.cc
+@@ -204,11 +204,13 @@ SharedImageFactory::SharedImageFactory(
+ #endif
+ 
+ #if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(ENABLE_VULKAN)
+   if (gr_context_type_ == GrContextType::kVulkan) {
+     auto external_vk_image_factory =
+         std::make_unique<ExternalVkImageFactory>(context_state);
+     factories_.push_back(std::move(external_vk_image_factory));
+   }
++#endif
+ #elif BUILDFLAG(IS_ANDROID)
+   if (use_gl) {
+     auto egl_backing_factory = std::make_unique<SharedImageBackingFactoryEGL>(
+diff --git a/gpu/command_buffer/service/webgpu_decoder_impl.cc b/gpu/command_buffer/service/webgpu_decoder_impl.cc
+index 387e034a42d653acdb0bb0b768cc3c46a5114ee5..bd482fcc8118713eb4d552da43df0faf4e14f94e 100644
+--- a/gpu/command_buffer/service/webgpu_decoder_impl.cc
++++ b/gpu/command_buffer/service/webgpu_decoder_impl.cc
+@@ -43,7 +43,7 @@
+ 
+ #if BUILDFLAG(IS_WIN)
+ #include <dawn/native/D3D12Backend.h>
+-#include <dawn/native/VulkanBackend.h>
++// #include <dawn/native/VulkanBackend.h>
+ #include "ui/gl/gl_angle_util_win.h"
+ #endif
+ 
+@@ -1231,11 +1231,11 @@ void WebGPUDecoderImpl::DiscoverAdapters() {
+   dawn::native::d3d12::AdapterDiscoveryOptions options(std::move(dxgi_adapter));
+   dawn_instance_->DiscoverAdapters(&options);
+ 
+-  // Also discover the SwiftShader adapter. It will be discovered by default
+-  // for other OSes in DiscoverDefaultAdapters.
+-  dawn::native::vulkan::AdapterDiscoveryOptions swiftShaderOptions;
+-  swiftShaderOptions.forceSwiftShader = true;
+-  dawn_instance_->DiscoverAdapters(&swiftShaderOptions);
++  // // Also discover the SwiftShader adapter. It will be discovered by default
++  // // for other OSes in DiscoverDefaultAdapters.
++  // dawn::native::vulkan::AdapterDiscoveryOptions swiftShaderOptions;
++  // swiftShaderOptions.forceSwiftShader = true;
++  // dawn_instance_->DiscoverAdapters(&swiftShaderOptions);
+ #else
+   dawn_instance_->DiscoverDefaultAdapters();
+ #endif
+diff --git a/gpu/vulkan/features.gni b/gpu/vulkan/features.gni
+index 7a98011f983ff7d5ff7e86fce9d143beb3a36ec9..eb3405684a96af96cd7feb9be1f61d5a14e35700 100644
+--- a/gpu/vulkan/features.gni
++++ b/gpu/vulkan/features.gni
+@@ -8,10 +8,10 @@ import("//build/config/ui.gni")
+ # For details see declare_args() in build/config/BUILDCONFIG.gn.
+ declare_args() {
+   # Enable experimental vulkan backend.
+-  enable_vulkan = is_linux || is_chromeos || is_android || is_fuchsia || is_win
++  enable_vulkan = false
+ 
+   # Enable swiftshader vulkan. Disabling it can save build time, however
+   # --use-vulkan=swiftshader and some tests which use swiftshader vulkan will
+   # not work.
+-  enable_swiftshader_vulkan = true
++  enable_swiftshader_vulkan = false
+ }
+diff --git a/media/gpu/windows/d3d11_texture_selector.cc b/media/gpu/windows/d3d11_texture_selector.cc
+index 40bc3db9dd8d7f3ec9aa930f45cdfef0a8e3f417..dc4dd537e8321929dc9f2e5d2dc3c2bda7667f7c 100644
+--- a/media/gpu/windows/d3d11_texture_selector.cc
++++ b/media/gpu/windows/d3d11_texture_selector.cc
+@@ -64,6 +64,7 @@ std::unique_ptr<TextureSelector> TextureSelector::Create(
+   switch (decoder_output_format) {
+     case DXGI_FORMAT_NV12: {
+       MEDIA_LOG(INFO, media_log) << "D3D11VideoDecoder producing NV12";
++#if 0
+       if (!needs_texture_copy || supports_fmt(DXGI_FORMAT_NV12)) {
+         output_pixel_format = PIXEL_FORMAT_NV12;
+         output_dxgi_format = DXGI_FORMAT_NV12;
+@@ -72,7 +73,9 @@ std::unique_ptr<TextureSelector> TextureSelector::Create(
+         // shaders or in the overlay, if needed.
+         output_color_space.reset();
+         MEDIA_LOG(INFO, media_log) << "D3D11VideoDecoder: Selected NV12";
+-      } else if (supports_fmt(DXGI_FORMAT_B8G8R8A8_UNORM)) {
++      } else
++#endif
++      if (supports_fmt(DXGI_FORMAT_B8G8R8A8_UNORM)) {
+         output_pixel_format = PIXEL_FORMAT_ARGB;
+         output_dxgi_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+         output_color_space.reset();
+diff --git a/ui/gl/gl_angle_util_win.cc b/ui/gl/gl_angle_util_win.cc
+index 345e8dd1646884312f23f5db02ce678fde55920d..4538235b8643c095c23aa725bc671e69f2314d0d 100644
+--- a/ui/gl/gl_angle_util_win.cc
++++ b/ui/gl/gl_angle_util_win.cc
+@@ -15,35 +15,57 @@
+ namespace gl {
+ 
+ void* QueryDeviceObjectFromANGLE(int object_type) {
+-  TRACE_EVENT0("gpu", "QueryDeviceObjectFromANGLE");
++  EGLDisplay egl_display = nullptr;
++  intptr_t egl_device = 0;
++  intptr_t device = 0;
+ 
+-  EGLDisplay egl_display = gl::GLSurfaceEGL::GetHardwareDisplay();
+-  if (egl_display == EGL_NO_DISPLAY) {
+-    DVLOG(1) << "Failed to retrieve EGLDisplay";
+-    return nullptr;
++  {
++    TRACE_EVENT0("gpu", "QueryDeviceObjectFromANGLE. GetHardwareDisplay");
++    egl_display = gl::GLSurfaceEGL::GetHardwareDisplay();
+   }
+ 
+-  if (!gl::GLSurfaceEGL::IsEGLQueryDeviceSupported()) {
+-    DVLOG(1) << "EGL_EXT_device_query not supported";
++  if (!gl::GLSurfaceEGL::HasEGLExtension("EGL_EXT_device_query"))
+     return nullptr;
+-  }
+ 
+-  intptr_t egl_device = 0;
+-  if (!eglQueryDisplayAttribEXT(egl_display, EGL_DEVICE_EXT, &egl_device)) {
+-    DVLOG(1) << "eglQueryDisplayAttribEXT failed";
+-    return nullptr;
++  PFNEGLQUERYDISPLAYATTRIBEXTPROC QueryDisplayAttribEXT = nullptr;
++
++  {
++    TRACE_EVENT0("gpu", "QueryDeviceObjectFromANGLE. eglGetProcAddress");
++
++    QueryDisplayAttribEXT = reinterpret_cast<PFNEGLQUERYDISPLAYATTRIBEXTPROC>(
++        eglGetProcAddress("eglQueryDisplayAttribEXT"));
++
++    if (!QueryDisplayAttribEXT)
++      return nullptr;
+   }
+ 
+-  if (!egl_device) {
+-    DVLOG(1) << "Failed to retrieve EGLDeviceEXT";
+-    return nullptr;
++  PFNEGLQUERYDEVICEATTRIBEXTPROC QueryDeviceAttribEXT = nullptr;
++
++  {
++    TRACE_EVENT0("gpu", "QueryDeviceObjectFromANGLE. eglGetProcAddress");
++
++    QueryDeviceAttribEXT = reinterpret_cast<PFNEGLQUERYDEVICEATTRIBEXTPROC>(
++        eglGetProcAddress("eglQueryDeviceAttribEXT"));
++    if (!QueryDeviceAttribEXT)
++      return nullptr;
+   }
+ 
+-  intptr_t device = 0;
+-  if (!eglQueryDeviceAttribEXT(reinterpret_cast<EGLDeviceEXT>(egl_device),
+-                               object_type, &device)) {
+-    DVLOG(1) << "eglQueryDeviceAttribEXT failed";
++  {
++    TRACE_EVENT0("gpu", "QueryDeviceObjectFromANGLE. QueryDisplayAttribEXT");
++
++    if (!QueryDisplayAttribEXT(egl_display, EGL_DEVICE_EXT, &egl_device))
++      return nullptr;
++  }
++  if (!egl_device)
+     return nullptr;
++
++  {
++    TRACE_EVENT0("gpu", "QueryDeviceObjectFromANGLE. QueryDisplayAttribEXT");
++
++    if (!QueryDeviceAttribEXT(reinterpret_cast<EGLDeviceEXT>(egl_device),
++                              object_type, &device)) {
++      return nullptr;
++    }
+   }
+ 
+   return reinterpret_cast<void*>(device);
+diff --git a/ui/gl/gl_context_egl.cc b/ui/gl/gl_context_egl.cc
+index 70daa416837f1a4a6aa16a2cca3542bb0f8faf1d..94cc9d2f473f111ce15e5c2251de591c24ebb2eb 100644
+--- a/ui/gl/gl_context_egl.cc
++++ b/ui/gl/gl_context_egl.cc
+@@ -242,8 +242,6 @@ bool GLContextEGL::Initialize(GLSurface* compatible_surface,
+     context_attributes.push_back(EGL_DISPLAY_SEMAPHORE_SHARE_GROUP_ANGLE);
+     context_attributes.push_back(
+         attribs.global_semaphore_share_group ? EGL_TRUE : EGL_FALSE);
+-  } else {
+-    DCHECK(!attribs.global_semaphore_share_group);
+   }
+ 
+   if (GLSurfaceEGL::IsCreateContextClientArraysSupported()) {
+diff --git a/ui/gl/gl_image_d3d.cc b/ui/gl/gl_image_d3d.cc
+index b2d15e16fa06cfcb13106c0929915df5585d0cff..9d8108c421596929350b4205a346c3b2c313297c 100644
+--- a/ui/gl/gl_image_d3d.cc
++++ b/ui/gl/gl_image_d3d.cc
+@@ -51,10 +51,6 @@ bool GLImageD3D::Initialize() {
+   DCHECK_EQ(egl_image_, EGL_NO_IMAGE_KHR);
+   const EGLint attribs[] = {EGL_TEXTURE_INTERNAL_FORMAT_ANGLE,
+                             static_cast<EGLint>(internal_format_),
+-                            EGL_D3D11_TEXTURE_ARRAY_SLICE_ANGLE,
+-                            static_cast<EGLint>(array_slice_),
+-                            EGL_D3D11_TEXTURE_PLANE_ANGLE,
+-                            static_cast<EGLint>(plane_index_),
+                             EGL_NONE};
+   egl_image_ =
+       eglCreateImageKHR(GLSurfaceEGL::GetHardwareDisplay(), EGL_NO_CONTEXT,
+diff --git a/ui/gl/gl_surface_egl.cc b/ui/gl/gl_surface_egl.cc
+index 544cdeceec1ce202cf1ea9b2929c582dbf76206e..babd7b1fcbf88f1ab31869b53cac40b71a4338f4 100644
+--- a/ui/gl/gl_surface_egl.cc
++++ b/ui/gl/gl_surface_egl.cc
+@@ -1133,7 +1133,7 @@ bool GLSurfaceEGL::InitializeOneOffCommon() {
+       HasEGLExtension("EGL_ANGLE_external_context_and_surface");
+ 
+   g_egl_ext_query_device_supported =
+-      HasEGLClientExtension("EGL_EXT_device_query");
++      HasEGLExtension("EGL_EXT_device_query");
+ 
+   g_egl_angle_context_virtualization_supported =
+       HasEGLExtension("EGL_ANGLE_context_virtualization");

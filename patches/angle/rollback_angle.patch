@@ -1,0 +1,178 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Fri, 21 Oct 2022 16:10:19 +0200
+Subject: fix: roll back ANGLE
+
+This patch adjusts code to fit a newer version of chromium/electron.
+
+diff --git a/BUILD.gn b/BUILD.gn
+index a8163925bc70cedbfec3f1c3b644e839cef63ef8..1d4dc3fcdeef65c54d8ea7024839387c0425da25 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -154,8 +154,9 @@ config("extra_warnings") {
+       "-Wparentheses",
+       "-Wrange-loop-analysis",
+       "-Wstrict-prototypes",
+-      "-Wunreachable-code",
++      "-Wno-unreachable-code",
+       "-Wshorten-64-to-32",
++      "-Wno-everything",
+     ]
+   }
+ 
+@@ -250,6 +251,8 @@ angle_source_set("angle_system_utils") {
+ 
+ angle_source_set("xxhash") {
+   sources = xxhash_sources
++
++  cflags = [ "-Wno-implicit-fallthrough" ]
+ }
+ 
+ if (angle_has_build) {
+@@ -393,6 +396,8 @@ angle_static_library("translator") {
+   sources = angle_translator_sources
+   defines = []
+ 
++  cflags = [ "-Wno-shadow", "-Wno-unreachable-code" ]
++
+   if (angle_enable_essl || use_fuzzing_engine) {
+     sources += angle_translator_essl_sources
+     defines += [ "ANGLE_ENABLE_ESSL" ]
+@@ -441,7 +446,7 @@ angle_static_library("translator") {
+   if (is_win) {
+     # Necessary to suppress some system header xtree warnigns in Release.
+     # For some reason this warning doesn't get triggered in Chromium
+-    cflags = [ "/wd4718" ]
++    cflags += [ "/wd4718" ]
+   }
+ }
+ 
+@@ -730,6 +735,7 @@ config("angle_frame_capture_enabled") {
+ }
+ 
+ angle_source_set("libANGLE") {
++  cflags = [ "-Wno-shadow", "-Wno-unreachable-code", "-Wno-unused-but-set-variable" ]
+   public_deps = [ ":libANGLE_base" ]
+   public_configs = [ ":angle_frame_capture_disabled" ]
+   sources = [ "src/libANGLE/FrameCapture_mock.cpp" ]
+diff --git a/gni/angle.gni b/gni/angle.gni
+index 4cf7766b402b455310d710b4bb8664e9635b98c5..9bedfef92b9e5ac808602479509d485cc3f9de5b 100644
+--- a/gni/angle.gni
++++ b/gni/angle.gni
+@@ -106,11 +106,7 @@ declare_args() {
+   # ANGLE Vulkan backend on Android requires API level 26, i.e. Oreo, due to
+   # Vulkan Validation Layers compatibility issues, see http://crrev/c/1405714.
+   # Otherwise, API level 24 would have been enough.
+-  angle_enable_vulkan =
+-      angle_has_build && ((is_win && !angle_is_winuwp) ||
+-                          (is_linux && angle_use_x11 && !is_chromeos) ||
+-                          (is_android && ndk_api_level_at_least_26) ||
+-                          is_fuchsia || is_ggp || is_mac)
++  angle_enable_vulkan = false
+   angle_enable_null = true
+   angle_enable_essl = true
+   angle_enable_glsl = true
+diff --git a/include/EGL/eglext_angle.h b/include/EGL/eglext_angle.h
+index 4702d95a4c3276c8aee440879e67bfc6aee46ce4..003680535a2e8e6d1d1d7e8c9eca00073451cbec 100644
+--- a/include/EGL/eglext_angle.h
++++ b/include/EGL/eglext_angle.h
+@@ -27,6 +27,8 @@
+ #define EGL_D3D_TEXTURE_ANGLE             0x33A3
+ #define EGL_TEXTURE_OFFSET_X_ANGLE        0x3490
+ #define EGL_TEXTURE_OFFSET_Y_ANGLE        0x3491
++#define EGL_D3D11_TEXTURE_PLANE_ANGLE 0x3492
++#define EGL_D3D11_TEXTURE_ARRAY_SLICE_ANGLE 0x3493
+ #endif /* EGL_ANGLE_d3d_texture_client_buffer */
+ 
+ #ifndef EGL_ANGLE_software_display
+diff --git a/src/common/vulkan/BUILD.gn b/src/common/vulkan/BUILD.gn
+index 6b5b02f4c0d2a443a629b36d671fd7b58656e678..937d6204742184532589e9ce47787db14c4a2eae 100644
+--- a/src/common/vulkan/BUILD.gn
++++ b/src/common/vulkan/BUILD.gn
+@@ -29,7 +29,7 @@ angle_source_set("angle_vulkan_headers") {
+     public_deps = [ "$angle_root/src/third_party/volk:volk" ]
+   } else {
+     public_deps =
+-        [ "$angle_root/third_party/vulkan-headers/src:vulkan_headers" ]
++        [ "//third_party/third_party/vulkan-deps/vulkan-headers/src:vulkan_headers" ]
+   }
+   public_configs = [ ":angle_vulkan_headers_config" ]
+ }
+@@ -45,9 +45,9 @@ group("angle_vulkan_entry_points") {
+     ]
+   } else if (!is_android && !is_ggp) {
+     if (angle_shared_libvulkan) {
+-      data_deps = [ "$angle_root/third_party/vulkan-loader/src:libvulkan" ]
++      data_deps = [ "//third_party/vulkan-deps/vulkan-loader/src:libvulkan" ]
+     } else {
+-      deps = [ "$angle_root/third_party/vulkan-loader/src:libvulkan" ]
++      deps = [ "//third_party/vulkan-deps/vulkan-loader/src:libvulkan" ]
+     }
+   }
+ }
+@@ -73,11 +73,11 @@ angle_source_set("vulkan") {
+ 
+   if (!is_android && !is_fuchsia && !is_ggp) {
+     if (angle_shared_libvulkan) {
+-      data_deps += [ "$angle_root/third_party/vulkan-loader/src:libvulkan" ]
++      data_deps += [ "//third_party/vulkan-deps/vulkan-loader/src:libvulkan" ]
+     } else {
+-      deps += [ "$angle_root/third_party/vulkan-loader/src:libvulkan" ]
++      deps += [ "//third_party/vulkan-deps/vulkan-loader/src:libvulkan" ]
+     }
+-    data_deps += [ "$angle_root/third_party/vulkan-tools/src:VkICD_mock_icd" ]
++    data_deps += [ "//third_party/vulkan-deps/vulkan-tools/src:VkICD_mock_icd" ]
+   }
+ 
+   if (angle_enable_swiftshader) {
+@@ -101,9 +101,9 @@ group("vulkan_validation_layers") {
+   if (is_fuchsia) {
+     data_deps += [ "//third_party/fuchsia-sdk:vulkan_validation" ]
+   } else {
+-    data_deps += [ "$angle_root/third_party/vulkan-validation-layers/src:vulkan_validation_layers" ]
++    data_deps += [ "//third_party/vulkan-deps/vulkan-validation-layers/src:vulkan_validation_layers" ]
+     if (!is_android) {
+-      data_deps += [ "$angle_root/third_party/vulkan-validation-layers/src:vulkan_gen_json_files" ]
++      data_deps += [ "//third_party/vulkan-deps/vulkan-validation-layers/src:vulkan_gen_json_files" ]
+     }
+   }
+ }
+diff --git a/src/libANGLE/renderer/d3d/d3d11/Renderer11.cpp b/src/libANGLE/renderer/d3d/d3d11/Renderer11.cpp
+index 9894787c1d62e42b68bac6be465c20e603b5973b..2484cb22973c24a3d3719accf66c84da27025821 100644
+--- a/src/libANGLE/renderer/d3d/d3d11/Renderer11.cpp
++++ b/src/libANGLE/renderer/d3d/d3d11/Renderer11.cpp
+@@ -1296,6 +1296,7 @@ void Renderer11::generateDisplayExtensions(egl::DisplayExtensions *outExtensions
+     outExtensions->streamProducerD3DTexture   = true;
+ 
+     outExtensions->flexibleSurfaceCompatibility = true;
++    outExtensions->noConfigContext = true;
+     outExtensions->directComposition            = !!mDCompModule;
+ 
+     // Contexts are virtualized so textures can be shared globally
+diff --git a/src/libANGLE/renderer/d3d/d3d9/Renderer9.cpp b/src/libANGLE/renderer/d3d/d3d9/Renderer9.cpp
+index 60629deeccc7c121b8532acbcb465106891d6cd0..cab96858d1f955240df69756b55d3d34bac66a6f 100644
+--- a/src/libANGLE/renderer/d3d/d3d9/Renderer9.cpp
++++ b/src/libANGLE/renderer/d3d/d3d9/Renderer9.cpp
+@@ -590,6 +590,7 @@ void Renderer9::generateDisplayExtensions(egl::DisplayExtensions *outExtensions)
+     outExtensions->glRenderbufferImage = true;
+ 
+     outExtensions->flexibleSurfaceCompatibility = true;
++    outExtensions->noConfigContext = true;
+ 
+     // Contexts are virtualized so textures can be shared globally
+     outExtensions->displayTextureShareGroup = true;
+diff --git a/src/libANGLE/validationEGL.cpp b/src/libANGLE/validationEGL.cpp
+index b566cf0fd156baf561e04ff52030b4b85a1389ab..e18bd39fe69468b2422f756ced405160190484fe 100644
+--- a/src/libANGLE/validationEGL.cpp
++++ b/src/libANGLE/validationEGL.cpp
+@@ -1856,6 +1856,10 @@ Error ValidateCreatePbufferFromClientBuffer(Display *display,
+                 }
+                 break;
+ 
++            case EGL_D3D11_TEXTURE_ARRAY_SLICE_ANGLE:
++            case EGL_D3D11_TEXTURE_PLANE_ANGLE:
++                break;
++
+             case EGL_IOSURFACE_USAGE_HINT_ANGLE:
+                 if (value & ~(EGL_IOSURFACE_READ_HINT_ANGLE | EGL_IOSURFACE_WRITE_HINT_ANGLE))
+                 {
