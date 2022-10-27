@@ -606,9 +606,6 @@ OffScreenRenderWidgetHostView::GetNewScreenInfosForUpdate() {
       display::mojom::ScreenOrientation::kLandscapePrimary;
   screen_infos.mutable_current().rect = gfx::Rect(size_);
   screen_infos.mutable_current().available_rect = gfx::Rect(size_);
-  if (!IsPopupWidget()) {
-    screen_infos.mutable_current().device_scale_factor = GetScaleFactor();
-  }
 
   return screen_infos;
 }
@@ -1305,6 +1302,7 @@ void OffScreenRenderWidgetHostView::SetupFrameRate() {
 bool OffScreenRenderWidgetHostView::SetRootLayerSize(bool force) {
   display::Display display =
       display::Screen::GetScreen()->GetDisplayNearestView(GetNativeView());
+  float oldScaleFactor = current_device_scale_factor_;
   float scaleFactor = display.device_scale_factor();
   if (!UsingAutoScaleFactor()) {
     scaleFactor = manual_device_scale_factor_;
@@ -1313,7 +1311,7 @@ bool OffScreenRenderWidgetHostView::SetRootLayerSize(bool force) {
 
   gfx::Size size = GetViewBounds().size();
 
-  const bool scale_factor_changed = (scaleFactor != GetScaleFactor());
+  const bool scale_factor_changed = (scaleFactor != oldScaleFactor);
   const bool view_bounds_changed = (size != GetRootLayer()->bounds().size());
 
   if (!force && !scale_factor_changed && !view_bounds_changed) {
