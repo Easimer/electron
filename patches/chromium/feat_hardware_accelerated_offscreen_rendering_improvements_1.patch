@@ -1,0 +1,293 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Fri, 2 Dec 2022 21:21:31 +0100
+Subject: feat: hardware accelerated offscreen rendering improvements #1
+
+This patch improves the stability of hardware accelerated offscreen rendering.
+
+Patch-filename: hardware_accelerated_offscreen_rendering-improvements-1.patch
+
+diff --git a/components/viz/service/display_embedder/skia_output_device_offscreen.cc b/components/viz/service/display_embedder/skia_output_device_offscreen.cc
+index 400e9b469109f4c61998a771f06075f4f8a41cb2..cfe39c65a375870be81501b1dfec0dc3e9f9b0d2 100644
+--- a/components/viz/service/display_embedder/skia_output_device_offscreen.cc
++++ b/components/viz/service/display_embedder/skia_output_device_offscreen.cc
+@@ -86,6 +86,7 @@ void RunSwapBuffersFinished(
+     SkiaOutputDeviceOffscreen::BufferPresentedCallback feedback,
+     gfx::Size size,
+     OutputSurfaceFrame frame,
++    gpu::Mailbox current_mailbox,
+     base::WeakPtr<SkiaOutputDeviceOffscreen> device,
+     const gpu::SyncToken& sync_token,
+     bool is_lost) {
+@@ -95,6 +96,7 @@ void RunSwapBuffersFinished(
+       std::move(feedback),
+       std::move(size),
+       std::move(frame),
++      std::move(current_mailbox),
+       std::move(sync_token),
+       std::move(is_lost)));
+ }
+@@ -102,11 +104,18 @@ void RunSwapBuffersFinished(
+ void SkiaOutputDeviceOffscreen::SwapBuffers(BufferPresentedCallback feedback,
+                                             OutputSurfaceFrame frame) {
+   // Reshape should have been called first.
+-  DCHECK(image_);
++  DCHECK(images_[current_image_]);
++
++  gpu::Mailbox current_image;
++  current_image.SetName(current_image_.name);
++  images_in_flight_.insert(current_image);
+ 
+   StartSwapBuffers(std::move(feedback));
+ 
+   auto size = gfx::Size(size_);
++  gpu::Mailbox current_mailbox;
++  current_mailbox.SetName(current_image_.name);
++
+   mojo::PendingRemote<mojom::SingleReleaseCallback> callback;
+   mojo::MakeSelfOwnedReceiver(
+       viz::SingleReleaseCallback::Create(base::BindOnce(
+@@ -115,6 +124,7 @@ void SkiaOutputDeviceOffscreen::SwapBuffers(BufferPresentedCallback feedback,
+           std::move(feedback),
+           std::move(size),
+           std::move(frame),
++          std::move(current_mailbox),
+           weak_ptr_factory_.GetWeakPtr())),
+       callback.InitWithNewPipeAndPassReceiver());
+ 
+@@ -137,19 +147,22 @@ void SkiaOutputDeviceOffscreen::EnsureBackbuffer() {
+   auto color_type = ResourceFormatToClosestSkColorType(true, resource_format);
+   auto alpha_type = has_alpha_ ? kPremul_SkAlphaType : kOpaque_SkAlphaType;
+ 
+-  image_ = impl_gpu_->CreateSharedImageRepresentationSkia(
++  auto image = impl_gpu_->CreateSharedImageRepresentationSkia(
+       resource_format,
+       size_,
+       gfx::ColorSpace(*sk_color_space_),
+       kBottomLeft_GrSurfaceOrigin,
+       alpha_type);
+ 
+-  if (!image_) {
++  if (!image) {
+     DLOG(ERROR) << "Failed to create shared image.";
+   }
+ 
++  current_image_.SetName(image->mailbox().name);
++  images_[current_image_].reset(image.release());
++
+   if (did_create_buffer_callback_) {
+-    did_create_buffer_callback_.Run(image_->mailbox());
++    did_create_buffer_callback_.Run(current_image_);
+   }
+ 
+   auto info = SkImageInfo::Make(size_.width(), size_.height(),
+@@ -157,54 +170,61 @@ void SkiaOutputDeviceOffscreen::EnsureBackbuffer() {
+   size_t estimated_size = info.computeMinByteSize();
+   backbuffer_estimated_size_ = estimated_size;
+ 
+-  std::vector<GrBackendSemaphore> begin_semaphores;
+-
+-  surface_write_access_ = image_->BeginScopedWriteAccess(
+-      0 /* final_msaa_count */,
+-      SkSurfaceProps(0 /* flags */, kUnknown_SkPixelGeometry),
+-      &begin_semaphores, &end_semaphores_,
+-      gpu::SharedImageRepresentation::AllowUnclearedAccess::kYes);
+-
+-  surface_write_access_->surface()->wait(begin_semaphores.size(),
+-                                         begin_semaphores.data());
+-
+   had_at_least_one_paint_ = false;
+ }
+ 
+ void SkiaOutputDeviceOffscreen::DiscardBackbuffer() {
+-  if (image_) {
+-    auto* end_state = surface_write_access_->end_state();
+-    if (!end_semaphores_.empty() || end_state) {
+-      GrFlushInfo flush_info = {
+-          .fNumSemaphores = end_semaphores_.size(),
+-          .fSignalSemaphores = end_semaphores_.data(),
+-      };
+-      surface_write_access_->surface()->flush(flush_info, end_state);
+-      auto* direct_context = surface_write_access_->surface()
+-                                 ->recordingContext()
+-                                 ->asDirectContext();
+-      DCHECK(direct_context);
+-      direct_context->submit();
+-    }
+-    surface_write_access_.reset();
+-    end_semaphores_.clear();
+-    image_.reset();
+-    backbuffer_estimated_size_ = 0u;
++  gpu::Mailbox current_image;
++  current_image.SetName(current_image_.name);
++  current_image_.SetZero();
++
++  if (images_in_flight_.find(current_image) != images_in_flight_.end()) {
++    images_to_discard_.insert(current_image);
++  } else {
++    images_.erase(current_image);
+   }
++  
++  backbuffer_estimated_size_ = 0u;
+ }
+ 
+ SkSurface* SkiaOutputDeviceOffscreen::BeginPaint(
+     bool allocate_frame_buffer,
+     std::vector<GrBackendSemaphore>* end_semaphores) {
+   DCHECK(!allocate_frame_buffer);
+-  DCHECK(image_);
++  DCHECK(images_[current_image_]);
+ 
++  std::vector<GrBackendSemaphore> begin_semaphores;
+   end_semaphores->swap(end_semaphores_);
+ 
++  surface_write_access_ = images_[current_image_]->BeginScopedWriteAccess(
++      0 /* final_msaa_count */,
++      SkSurfaceProps(0 /* flags */, kUnknown_SkPixelGeometry),
++      &begin_semaphores, &end_semaphores_,
++      gpu::SharedImageRepresentation::AllowUnclearedAccess::kYes);
++
++  surface_write_access_->surface()->wait(begin_semaphores.size(),
++                                         begin_semaphores.data());
++
+   return surface_write_access_->surface();
+ }
+ 
+ void SkiaOutputDeviceOffscreen::EndPaint() {
++  auto* end_state = surface_write_access_->end_state();
++  if (!end_semaphores_.empty() || end_state) {
++    GrFlushInfo flush_info = {
++        .fNumSemaphores = end_semaphores_.size(),
++        .fSignalSemaphores = end_semaphores_.data(),
++    };
++    surface_write_access_->surface()->flush(flush_info, end_state);
++    auto* direct_context = surface_write_access_->surface()
++                                ->recordingContext()
++                                ->asDirectContext();
++    DCHECK(direct_context);
++    direct_context->submit();
++  }
++  surface_write_access_.reset();
++  end_semaphores_.clear();
++
+   had_at_least_one_paint_ = true;
+ }
+ 
+@@ -212,10 +232,12 @@ void SkiaOutputDeviceOffscreen::OnSwapBuffersFinished(
+     BufferPresentedCallback feedback,
+     const gfx::Size& size,
+     OutputSurfaceFrame frame,
++    gpu::Mailbox current_mailbox,
+     const gpu::SyncToken& sync_token,
+     bool is_lost) {
+   if (is_lost) {
+-    DoRunFinishSwapBuffers(std::move(feedback), size, std::move(frame));
++    DoRunFinishSwapBuffers(std::move(feedback), size, std::move(frame), 
++                           std::move(current_mailbox));
+     return;
+   }
+ 
+@@ -224,7 +246,8 @@ void SkiaOutputDeviceOffscreen::OnSwapBuffersFinished(
+       weak_ptr_factory_.GetWeakPtr(),
+       std::move(feedback),
+       std::move(size),
+-      std::move(frame),
++      std::move(frame), 
++      std::move(current_mailbox),
+       std::move(sync_token)), sync_token);
+ }
+ 
+@@ -232,6 +255,7 @@ void SkiaOutputDeviceOffscreen::RunFinishSwapBuffers(
+     BufferPresentedCallback feedback,
+     const gfx::Size& size,
+     OutputSurfaceFrame frame,
++    gpu::Mailbox current_mailbox,
+     const gpu::SyncToken& sync_token) {
+   bool waiting = impl_gpu_->GetSyncPointClientState()->Wait(
+       sync_token, base::BindOnce(
+@@ -239,19 +263,28 @@ void SkiaOutputDeviceOffscreen::RunFinishSwapBuffers(
+           weak_ptr_factory_.GetWeakPtr(),
+           std::move(feedback),
+           std::move(size),
+-          std::move(frame)));
++          std::move(frame),
++          std::move(current_mailbox)));
+ 
+   if (!waiting) {
+-    DoRunFinishSwapBuffers(std::move(feedback), size, std::move(frame));
++    DoRunFinishSwapBuffers(std::move(feedback), size, std::move(frame), 
++                           std::move(current_mailbox));
+   }
+ }
+ 
+ void SkiaOutputDeviceOffscreen::DoRunFinishSwapBuffers(
+     BufferPresentedCallback feedback,
+     const gfx::Size& size,
+-    OutputSurfaceFrame frame) {
++    OutputSurfaceFrame frame,
++    gpu::Mailbox current_mailbox) {
++  images_in_flight_.erase(current_mailbox);
+   FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
+                     size, std::move(frame));
++  
++  if (images_to_discard_.find(current_mailbox) != images_to_discard_.end()) {
++    images_.erase(current_mailbox);
++    images_to_discard_.erase(current_mailbox);
++  }
+ }
+ 
+ }  // namespace viz
+diff --git a/components/viz/service/display_embedder/skia_output_device_offscreen.h b/components/viz/service/display_embedder/skia_output_device_offscreen.h
+index 71c6e5d1eae9c1c59f4b09f8d4a7da5e21b38329..fcc4c131776e044d1fe6a1a5e813e4f7ae8142bf 100644
+--- a/components/viz/service/display_embedder/skia_output_device_offscreen.h
++++ b/components/viz/service/display_embedder/skia_output_device_offscreen.h
+@@ -16,6 +16,8 @@
+ 
+ namespace viz {
+ 
++using SharedImagePointer = std::unique_ptr<gpu::SharedImageRepresentationSkia>;
++
+ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
+  public:
+   SkiaOutputDeviceOffscreen(
+@@ -58,6 +60,7 @@ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
+       SkiaOutputDeviceOffscreen::BufferPresentedCallback feedback,
+       gfx::Size size,
+       OutputSurfaceFrame frame,
++      gpu::Mailbox current_mailbox,
+       base::WeakPtr<SkiaOutputDeviceOffscreen> device,
+       const gpu::SyncToken& sync_token,
+       bool is_lost);
+@@ -66,24 +69,30 @@ class SkiaOutputDeviceOffscreen : public SkiaOutputDevice {
+   void OnSwapBuffersFinished(BufferPresentedCallback feedback,
+                              const gfx::Size& size,
+                              OutputSurfaceFrame frame,
++                             gpu::Mailbox current_mailbox,
+                              const gpu::SyncToken& sync_token,
+                              bool is_lost);
+ 
+   void RunFinishSwapBuffers(BufferPresentedCallback feedback,
+                             const gfx::Size& size,
+                             OutputSurfaceFrame frame,
++                            gpu::Mailbox current_mailbox,
+                             const gpu::SyncToken& sync_token);
+ 
+   void DoRunFinishSwapBuffers(BufferPresentedCallback feedback,
+                               const gfx::Size& size,
+-                              OutputSurfaceFrame frame);
++                              OutputSurfaceFrame frame,
++                              gpu::Mailbox current_mailbox);
+ 
+   scoped_refptr<gpu::SharedContextState> context_state_;
+   scoped_refptr<viz::SkiaOutputSurfaceImplOnGpu> impl_gpu_;
+   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+-  std::unique_ptr<gpu::SharedImageRepresentationSkia> image_;
++  gpu::Mailbox current_image_;
+   std::unique_ptr<gpu::SharedImageRepresentationSkia::ScopedWriteAccess>
+     surface_write_access_;
++  std::map<gpu::Mailbox, SharedImagePointer> images_;
++  std::set<gpu::Mailbox> images_to_discard_;
++  std::set<gpu::Mailbox> images_in_flight_;
+   const bool has_alpha_;
+   bool supports_rgbx_ = true;
+   gfx::Size size_;

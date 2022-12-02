@@ -180,7 +180,7 @@ index 6ce90bcc5ecde92c44f321b9c4cfb0f89505e3b6..0c19322196e73acc97cc45a0b21c703c
    if (use_gl) {
      auto egl_backing_factory = std::make_unique<SharedImageBackingFactoryEGL>(
 diff --git a/gpu/command_buffer/service/webgpu_decoder_impl.cc b/gpu/command_buffer/service/webgpu_decoder_impl.cc
-index 387e034a42d653acdb0bb0b768cc3c46a5114ee5..bd482fcc8118713eb4d552da43df0faf4e14f94e 100644
+index b4e5dd0001461986703abc08f1e6fc3d658636f3..aadcd32bd3eadb88fff38bfcc835108ed075b13b 100644
 --- a/gpu/command_buffer/service/webgpu_decoder_impl.cc
 +++ b/gpu/command_buffer/service/webgpu_decoder_impl.cc
 @@ -43,7 +43,7 @@
@@ -192,7 +192,7 @@ index 387e034a42d653acdb0bb0b768cc3c46a5114ee5..bd482fcc8118713eb4d552da43df0faf
  #include "ui/gl/gl_angle_util_win.h"
  #endif
  
-@@ -1231,11 +1231,11 @@ void WebGPUDecoderImpl::DiscoverAdapters() {
+@@ -1228,11 +1228,11 @@ void WebGPUDecoderImpl::DiscoverAdapters() {
    dawn::native::d3d12::AdapterDiscoveryOptions options(std::move(dxgi_adapter));
    dawn_instance_->DiscoverAdapters(&options);
  
