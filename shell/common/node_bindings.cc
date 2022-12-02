@@ -256,8 +256,8 @@ void SetNodeOptions(base::Environment* env) {
       "--force-fips", "--enable-fips"};
 
   // Subset of options allowed in packaged apps
-  const std::set<std::string> allowed_in_packaged = {"--max-http-header-size",
-                                                     "--http-parser"};
+  // const std::set<std::string> allowed_in_packaged = {"--max-http-header-size",
+  //                                                    "--http-parser"};
 
   if (env->HasVar("NODE_OPTIONS")) {
     if (electron::fuses::IsNodeOptionsEnabled()) {
@@ -266,19 +266,20 @@ void SetNodeOptions(base::Environment* env) {
       std::vector<std::string> parts = base::SplitString(
           options, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
 
-      bool is_packaged_app = electron::api::App::IsPackaged();
+      // bool is_packaged_app = electron::api::App::IsPackaged();
 
       for (const auto& part : parts) {
         // Strip off values passed to individual NODE_OPTIONs
         std::string option = part.substr(0, part.find('='));
 
-        if (is_packaged_app &&
-            allowed_in_packaged.find(option) == allowed_in_packaged.end()) {
-          // Explicitly disallow majority of NODE_OPTIONS in packaged apps
-          LOG(ERROR) << "Most NODE_OPTIONs are not supported in packaged apps."
-                     << " See documentation for more details.";
-          options.erase(options.find(option), part.length());
-        } else if (disallowed.find(option) != disallowed.end()) {
+        // if (is_packaged_app &&
+        //     allowed_in_packaged.find(option) == allowed_in_packaged.end()) {
+        //   // Explicitly disallow majority of NODE_OPTIONS in packaged apps
+        //   LOG(ERROR) << "Most NODE_OPTIONs are not supported in packaged apps."
+        //              << " See documentation for more details.";
+        //   options.erase(options.find(option), part.length());
+        // } else 
+        if (disallowed.find(option) != disallowed.end()) {
           // Remove NODE_OPTIONS specifically disallowed for use in Node.js
           // through Electron owing to constraints like BoringSSL.
           LOG(ERROR) << "The NODE_OPTION " << option
