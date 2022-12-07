@@ -2104,6 +2104,21 @@ content::WebContents* WebContents::GetDevToolsWebContents() const {
   return inspectable_web_contents_->GetDevToolsWebContents();
 }
 
+void WebContents::Freeze() {
+  auto* web_contents = GetWebContents();
+  if (web_contents) {
+    web_contents->WasHidden();
+    web_contents->SetPageFrozen(true);
+  }
+}
+
+void WebContents::Unfreeze() {
+  auto* web_contents = GetWebContents();
+  if (web_contents) {
+    web_contents->WasShown();
+  }
+}
+
 void WebContents::WebContentsDestroyed() {
   // Clear the pointer stored in wrapper.
   if (GetAllWebContents().Lookup(id_))
@@ -4312,6 +4327,8 @@ v8::Local<v8::ObjectTemplate> WebContents::FillObjectTemplate(
                    &WebContents::SetScaleFactor)
 #endif
       .SetMethod("invalidate", &WebContents::Invalidate)
+      .SetMethod("freeze", &WebContents::Freeze)
+      .SetMethod("unfreeze", &WebContents::Unfreeze)
       .SetMethod("setZoomLevel", &WebContents::SetZoomLevel)
       .SetMethod("getZoomLevel", &WebContents::GetZoomLevel)
       .SetMethod("setZoomFactor", &WebContents::SetZoomFactor)

@@ -461,6 +461,9 @@ class WebContents : public ExclusiveAccessContext,
     fullscreen_frame_ = rfh;
   }
 
+  void Freeze();
+  void Unfreeze();
+
   // mojom::ElectronApiIPC
   void Message(bool internal,
                const std::string& channel,
