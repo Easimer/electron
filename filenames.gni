@@ -457,6 +457,8 @@ filenames = {
     "shell/browser/notifications/notification_presenter.h",
     "shell/browser/notifications/platform_notification_service.cc",
     "shell/browser/notifications/platform_notification_service.h",
+    "shell/browser/electron_offscreen_canvas_producer.cc",
+    "shell/browser/electron_offscreen_canvas_producer.h",
     "shell/browser/plugins/plugin_utils.cc",
     "shell/browser/plugins/plugin_utils.h",
     "shell/browser/pref_store_delegate.cc",

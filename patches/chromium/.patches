@@ -120,3 +120,4 @@ feat_hardware_accelerated_offscreen_rendering.patch
 add_pdfjs_options.patch
 rollback_angle.patch
 feat_hardware_accelerated_offscreen_rendering_improvements_1.patch
+feat_observable_offscreen_canvas.patch

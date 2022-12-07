@@ -1,0 +1,418 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Wed, 7 Dec 2022 12:10:57 +0100
+Subject:  feat: observable offscreen canvas
+
+This patch adds the ability to produce textures from OffscreenCanvas instances.
+
+diff --git a/content/browser/browser_interface_binders.cc b/content/browser/browser_interface_binders.cc
+index c3dd39d4887160779d6fee761111ea21cb77a0cf..30d1e58e51994f8781514922ed268c0b0ac100da 100644
+--- a/content/browser/browser_interface_binders.cc
++++ b/content/browser/browser_interface_binders.cc
+@@ -73,6 +73,8 @@
+ #include "device/gamepad/public/mojom/gamepad.mojom.h"
+ #include "device/vr/buildflags/buildflags.h"
+ #include "device/vr/public/mojom/vr_service.mojom.h"
++#include "electron/shell/common/api/api.mojom.h"
++#include "electron/shell/browser/electron_offscreen_canvas_producer.h"
+ #include "media/capture/mojom/image_capture.mojom.h"
+ #include "media/capture/mojom/video_capture.mojom.h"
+ #include "media/mojo/mojom/interface_factory.mojom.h"
+@@ -724,6 +726,9 @@ void PopulateFrameBinders(RenderFrameHostImpl* host, mojo::BinderMap* map) {
+   map->Add<device::mojom::BatteryMonitor>(
+       base::BindRepeating(&BindBatteryMonitor, base::Unretained(host)));
+ 
++  map->Add<electron::mojom::OffscreenCanvasTextureProducer>(
++      base::BindRepeating(&electron::OffscreenCanvasProducer::Create));
++
+   map->Add<blink::mojom::CacheStorage>(base::BindRepeating(
+       &RenderFrameHostImpl::BindCacheStorage, base::Unretained(host)));
+ 
+diff --git a/third_party/blink/public/mojom/web_feature/web_feature.mojom b/third_party/blink/public/mojom/web_feature/web_feature.mojom
+index ef64c5992df0ba0222147e4dae08355f9a2fb827..a4c74ec48ded2bbea45a5185aca662ba9d9ae607 100644
+--- a/third_party/blink/public/mojom/web_feature/web_feature.mojom
++++ b/third_party/blink/public/mojom/web_feature/web_feature.mojom
+@@ -3494,6 +3494,7 @@ enum WebFeature {
+   kMediaCapabilitiesEncodingInfoWebrtc = 4175,
+   kUsbDeviceForget = 4176,
+   kPartitionedCookies = 4177,
++  kOffscreenCanvasScheduleTexturePaint = 4179,
+ 
+   // Add new features immediately above this line. Don't change assigned
+   // numbers of any item, and don't reuse removed slots.
+diff --git a/third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h b/third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h
+index 7afd1a94b5f97a9fb7a6692cbb1b476948169d49..b393a3534886ca1fa463464ca8c6adb58f86435e 100644
+--- a/third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h
++++ b/third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h
+@@ -26,6 +26,7 @@
+ #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_HTML_CANVAS_CANVAS_RENDERING_CONTEXT_H_
+ #define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_CANVAS_CANVAS_RENDERING_CONTEXT_H_
+ 
++#include "gpu/command_buffer/common/sync_token.h"
+ #include "third_party/blink/public/common/privacy_budget/identifiable_token.h"
+ #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
+ #include "third_party/blink/renderer/core/core_export.h"
+@@ -78,6 +79,11 @@ class CORE_EXPORT CanvasRenderingContext
+     kMaxValue = kWebgpu,
+   };
+ 
++  using TexturePaintedCallback = base::OnceCallback<void(
++      scoped_refptr<StaticBitmapImage> image,
++      const gpu::SyncToken& sync_token,
++      const gfx::Rect& rect)>;
++
+   CanvasRenderingAPI GetRenderingAPI() const { return canvas_rendering_type_; }
+ 
+   bool IsRenderingContext2D() const {
+@@ -125,6 +131,7 @@ class CORE_EXPORT CanvasRenderingContext
+   SkColorInfo CanvasRenderingContextSkColorInfo() const;
+ 
+   virtual scoped_refptr<StaticBitmapImage> GetImage() = 0;
++  virtual void SchedulePaintToSharedTexture(TexturePaintedCallback callback) {}
+   virtual bool IsComposited() const = 0;
+   virtual bool IsAccelerated() const = 0;
+   virtual bool IsOriginTopLeft() const {
+diff --git a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
+index 584920aad8a3bfd9f00bf0db99fdf1891b13176b..78b7f37e5a6db40feef653451bc560a3aa5a6504 100644
+--- a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
++++ b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
+@@ -6,9 +6,12 @@
+ 
+ #include <memory>
+ #include <utility>
++#include <random>
+ 
+ #include "base/metrics/histogram_functions.h"
+ #include "base/numerics/safe_conversions.h"
++#include "components/viz/common/resources/single_release_callback.h"
++#include "mojo/public/cpp/bindings/self_owned_receiver.h"
+ #include "third_party/blink/public/common/privacy_budget/identifiability_metric_builder.h"
+ #include "third_party/blink/public/common/privacy_budget/identifiability_metrics.h"
+ #include "third_party/blink/public/common/privacy_budget/identifiability_study_settings.h"
+@@ -50,12 +53,16 @@
+ 
+ namespace blink {
+ 
++[[clang::no_destroy]]
++OffscreenCanvas::uuid_generator OffscreenCanvas::gen;
++
+ OffscreenCanvas::OffscreenCanvas(ExecutionContext* context,
+                                  const gfx::Size& size)
+     : CanvasRenderingContextHost(
+           CanvasRenderingContextHost::HostType::kOffscreenCanvasHost),
+       execution_context_(context),
+-      size_(size) {
++      size_(size),
++      uuid_(generateUUID()) {
+   // Other code in Blink watches for destruction of the context; be
+   // robust here as well.
+   if (!context->IsContextDestroyed()) {
+@@ -75,6 +82,10 @@ OffscreenCanvas::OffscreenCanvas(ExecutionContext* context,
+       // itself cross-origin.
+       AllowHighPerformancePowerPreference();
+     }
++
++    context->GetBrowserInterfaceBroker().GetInterface(
++        texture_producer_.BindNewPipeAndPassReceiver(
++            context->GetTaskRunner(TaskType::kInternalDefault)));
+   }
+ 
+   CanvasResourceTracker::For(context->GetIsolate())->Add(this, context);
+@@ -160,6 +171,8 @@ void OffscreenCanvas::setHeight(unsigned height) {
+   SetSize(new_size);
+ }
+ 
++void OffscreenCanvas::setUuid(WTF::String uuid) {}
++
+ void OffscreenCanvas::SetSize(const gfx::Size& size) {
+   // Setting size of a canvas also resets it.
+   if (size == size_) {
+@@ -194,6 +207,41 @@ ScriptPromise OffscreenCanvas::convertToBlob(ScriptState* script_state,
+                                                    exception_state, context_);
+ }
+ 
++void OffscreenCanvas::scheduleTexturePaint(ScriptState* script_state,
++                                           ExceptionState& exception_state) {
++  if (context_) {
++    context_->SchedulePaintToSharedTexture(base::BindOnce(
++      &OffscreenCanvas::OnTexturePaint,
++      weak_ptr_factory_.GetWeakPtr()));
++  }
++}
++
++void TexturePaintDone(
++    scoped_refptr<StaticBitmapImage> image,
++    const gpu::SyncToken& sync_token,
++    bool is_lost) {
++  // noop, just release image
++}
++
++void OffscreenCanvas::OnTexturePaint(
++    scoped_refptr<StaticBitmapImage> image,
++    const gpu::SyncToken& sync_token,
++    const gfx::Rect& rect) {
++  mojo::PendingRemote<::viz::mojom::SingleReleaseCallback> callback;
++  gpu::MailboxHolder mailbox_holder = image->GetMailboxHolder();
++  mojo::MakeSelfOwnedReceiver(
++      viz::SingleReleaseCallback::Create(base::BindOnce(
++          TexturePaintDone, std::move(image))),
++      callback.InitWithNewPipeAndPassReceiver());
++
++  texture_producer_->OnTextureProduced(
++      uuid_.Ascii(), 
++      std::move(mailbox_holder.mailbox), 
++      std::move(sync_token), 
++      rect, 
++      std::move(callback));
++}
++
+ void OffscreenCanvas::RecordTransfer() {
+   UMA_HISTOGRAM_BOOLEAN("Blink.OffscreenCanvas.Transferred", true);
+ }
+@@ -354,6 +402,21 @@ CanvasRenderingContextFactory* OffscreenCanvas::GetRenderingContextFactory(
+   return RenderingContextFactories()[type].get();
+ }
+ 
++std::string OffscreenCanvas::generateUUID() {
++  std::uniform_int_distribution<int> dist(0, 15);
++
++  const char *v = "0123456789abcdef";
++  const bool dash[] = { 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0 };
++
++  std::string res;
++  for (int i = 0; i < 16; i++) {
++      if (dash[i]) res += "-";
++      res += v[dist(gen.rng)];
++      res += v[dist(gen.rng)];
++  }
++  return res;
++}
++
+ void OffscreenCanvas::RegisterRenderingContextFactory(
+     std::unique_ptr<CanvasRenderingContextFactory> rendering_context_factory) {
+   CanvasRenderingContext::CanvasRenderingAPI rendering_api =
+diff --git a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h
+index 99898be4cc87a1cc671f360f9e7d70ce5f625403..c31bd83bf39b684a0d9365f951f92dd93ea475e6 100644
+--- a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h
++++ b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h
+@@ -7,6 +7,9 @@
+ 
+ #include <memory>
+ 
++#include "base/memory/weak_ptr.h"
++#include "electron/shell/common/api/api.mojom.h"
++#include "mojo/public/cpp/bindings/remote.h"
+ #include "third_party/blink/public/common/privacy_budget/identifiable_surface.h"
+ #include "third_party/blink/public/common/privacy_budget/identifiable_token.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+@@ -20,6 +23,7 @@
+ #include "third_party/blink/renderer/platform/graphics/canvas_resource_dispatcher.h"
+ #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+ #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
++#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ #include "ui/gfx/geometry/size.h"
+ 
+ namespace blink {
+@@ -53,8 +57,10 @@ class CORE_EXPORT OffscreenCanvas final
+   // IDL attributes
+   unsigned width() const { return size_.width(); }
+   unsigned height() const { return size_.height(); }
++  WTF::String uuid() const { return uuid_; }
+   void setWidth(unsigned);
+   void setHeight(unsigned);
++  void setUuid(WTF::String);
+ 
+   // CanvasResourceDispatcherClient
+   bool BeginFrame() override;
+@@ -68,6 +74,11 @@ class CORE_EXPORT OffscreenCanvas final
+                               const ImageEncodeOptions* options,
+                               ExceptionState& exception_state);
+ 
++  void scheduleTexturePaint(ScriptState*, ExceptionState&);                       
++  void OnTexturePaint(
++      scoped_refptr<StaticBitmapImage> image,
++      const gpu::SyncToken& sync_token,
++      const gfx::Rect& rect);
+   const gfx::Size& Size() const override { return size_; }
+   void SetSize(const gfx::Size&);
+   void RecordTransfer();
+@@ -235,6 +246,19 @@ class CORE_EXPORT OffscreenCanvas final
+   static ContextFactoryVector& RenderingContextFactories();
+   static CanvasRenderingContextFactory* GetRenderingContextFactory(int);
+ 
++  struct uuid_generator {
++    uuid_generator() {
++      rng = std::mt19937(device());
++    }
++
++    std::random_device device;
++    std::mt19937 rng;
++  };
++
++  [[clang::no_destroy]]
++  static uuid_generator gen;
++  static std::string generateUUID();
++
+   void RecordIdentifiabilityMetric(const blink::IdentifiableSurface& surface,
+                                    const IdentifiableToken& token) const;
+ 
+@@ -269,6 +293,11 @@ class CORE_EXPORT OffscreenCanvas final
+   // then the following members would remain as initialized zero values.
+   uint32_t client_id_ = 0;
+   uint32_t sink_id_ = 0;
++
++  WTF::String uuid_;
++  mojo::Remote<::electron::mojom::OffscreenCanvasTextureProducer> texture_producer_;
++  
++  base::WeakPtrFactory<OffscreenCanvas> weak_ptr_factory_{this};
+ };
+ 
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.idl b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.idl
+index f5821d38f1bf3f3283077d358ea80926db278e5e..2a9ce7a849f889cbf68f7a91286c04dd60e4651d 100644
+--- a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.idl
++++ b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.idl
+@@ -11,9 +11,11 @@
+     [CallWith=ExecutionContext, MeasureAs=OffscreenCanvas] constructor([EnforceRange] unsigned long width, [EnforceRange] unsigned long height);
+     attribute [EnforceRange] unsigned long width;
+     attribute [EnforceRange] unsigned long height;
++    attribute DOMString uuid;
+ 
+     [CallWith=ScriptState, HighEntropy, MeasureAs=OffscreenCanvasTransferToImageBitmap, RaisesException] ImageBitmap transferToImageBitmap();
+     [CallWith=ScriptState, HighEntropy, MeasureAs=OffscreenCanvasConvertToBlob, RaisesException] Promise<Blob> convertToBlob(optional ImageEncodeOptions options = {});
++    [CallWith=ScriptState, HighEntropy, MeasureAs=OffscreenCanvasScheduleTexturePaint, RaisesException] void scheduleTexturePaint();
+ 
+     [RuntimeEnabled=NewCanvas2DAPI] attribute EventHandler oncontextlost;
+     [RuntimeEnabled=NewCanvas2DAPI] attribute EventHandler oncontextrestored;
+diff --git a/third_party/blink/renderer/modules/canvas/BUILD.gn b/third_party/blink/renderer/modules/canvas/BUILD.gn
+index ca6c394c989d6fdac979ebad983cdecaf7ba240d..4d6a5b74387c0b44708d95fdddf82da14fc59b9b 100644
+--- a/third_party/blink/renderer/modules/canvas/BUILD.gn
++++ b/third_party/blink/renderer/modules/canvas/BUILD.gn
+@@ -53,7 +53,11 @@ blink_modules_sources("canvas") {
+     "offscreencanvas2d/offscreen_canvas_rendering_context_2d.h",
+   ]
+ 
+-  deps = [ "//third_party/blink/renderer/modules/webcodecs" ]
++  deps = [ 
++    "//third_party/blink/renderer/modules/webcodecs", 
++    "//electron/native_api:canvas",
++    "//electron/shell/common/api:mojo",
++  ]
+   allow_circular_includes_from =
+       [ "//third_party/blink/renderer/modules/webcodecs" ]
+ }
+diff --git a/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc
+index e567d7b3dc5a2755afc30e4eb7d150f500a59d1f..c4c677e1c5fd0dd44225a5d5282a73314bd0de5f 100644
+--- a/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc
+@@ -266,6 +266,27 @@ scoped_refptr<StaticBitmapImage> OffscreenCanvasRenderingContext2D::GetImage() {
+   return image;
+ }
+ 
++void OffscreenCanvasRenderingContext2D::SchedulePaintToSharedTexture(
++    TexturePaintedCallback callback) {
++  if (!GetOrCreateCanvasResourceProvider())
++    return;
++  scoped_refptr<StaticBitmapImage> image = GetImage();
++  if (!image)
++    return;
++  image->SetOriginClean(OriginClean());
++  // Before discarding the image resource, we need to flush pending render ops
++  // to fully resolve the snapshot.
++  image->PaintImageForCurrentFrame().FlushPendingSkiaOps();
++
++  gpu::SyncToken sync_token;
++  image->GenSyncToken();
++
++  std::move(callback).Run(
++      std::move(image), 
++      std::move(sync_token), 
++      gfx::Rect(0, 0, Width(), Height()));
++}
++
+ NoAllocDirectCallHost*
+ OffscreenCanvasRenderingContext2D::AsNoAllocDirectCallHost() {
+   return this;
+diff --git a/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h b/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h
+index 354d83c598538a203a844f88963a3c7a0c6a76eb..a34acb2fa7949e1535196a6e7acc60fdcfe8c3ca 100644
+--- a/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h
++++ b/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h
+@@ -5,6 +5,7 @@
+ #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_OFFSCREENCANVAS2D_OFFSCREEN_CANVAS_RENDERING_CONTEXT_2D_H_
+ #define THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_OFFSCREENCANVAS2D_OFFSCREEN_CANVAS_RENDERING_CONTEXT_2D_H_
+ 
++#include "electron/native_api/offscreen.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_typedefs.h"
+ #include "third_party/blink/renderer/core/html/canvas/canvas_context_creation_attributes_core.h"
+ #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
+@@ -65,6 +66,7 @@ class MODULES_EXPORT OffscreenCanvasRenderingContext2D final
+     BaseRenderingContext2D::clearRect(x, y, width, height);
+   }
+   scoped_refptr<StaticBitmapImage> GetImage() final;
++  void SchedulePaintToSharedTexture(TexturePaintedCallback callback) final;
+   void Reset() override;
+   void RestoreCanvasMatrixClipStack(cc::PaintCanvas* c) const override {
+     RestoreMatrixClipStack(c);
+diff --git a/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.cc b/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.cc
+index 71025d4fdf6ca403fbfe1d10163052134e209b7f..1f2d53d64468bd491aa31ac4edd3a2138b5652bf 100644
+--- a/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.cc
++++ b/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.cc
+@@ -157,6 +157,21 @@ bool AcceleratedStaticBitmapImage::CopyToTexture(
+   return true;
+ }
+ 
++gpu::SyncToken AcceleratedStaticBitmapImage::GenSyncToken() {
++  base::WeakPtr<WebGraphicsContext3DProviderWrapper> shared_context_wrapper =
++      SharedGpuContext::ContextProviderWrapper();
++  if (!shared_context_wrapper || !shared_context_wrapper->ContextProvider())
++    return gpu::SyncToken();
++
++  auto* ri = shared_context_wrapper->ContextProvider()->RasterInterface();
++  DCHECK(ri);
++
++  gpu::SyncToken sync_token;
++  ri->GenSyncTokenCHROMIUM(sync_token.GetData());
++
++  return sync_token;
++}
++
+ bool AcceleratedStaticBitmapImage::CopyToResourceProvider(
+     CanvasResourceProvider* resource_provider) {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+diff --git a/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h b/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h
+index 7072de21be5afbf00fe5d3bc549885ef4573a3e5..9e6e66efbbc2a6951d9a213f4f32bf7e40e244b4 100644
+--- a/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h
++++ b/third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h
+@@ -96,6 +96,8 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
+                      const gfx::Point& dest_point,
+                      const gfx::Rect& source_sub_rectangle) override;
+ 
++  gpu::SyncToken GenSyncToken() override;
++
+   bool CopyToResourceProvider(
+       CanvasResourceProvider* resource_provider) override;
+ 
+diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.h b/third_party/blink/renderer/platform/graphics/static_bitmap_image.h
+index c02381c38b460e29d0b9804c9cf42222d4e65566..276eafee9c9417d5415943c096b00efda5ba3aec 100644
+--- a/third_party/blink/renderer/platform/graphics/static_bitmap_image.h
++++ b/third_party/blink/renderer/platform/graphics/static_bitmap_image.h
+@@ -7,6 +7,7 @@
+ 
+ #include "base/memory/weak_ptr.h"
+ #include "gpu/command_buffer/common/mailbox_holder.h"
++#include "gpu/command_buffer/common/sync_token.h"
+ #include "third_party/blink/renderer/platform/graphics/canvas_color_params.h"
+ #include "third_party/blink/renderer/platform/graphics/graphics_types.h"
+ #include "third_party/blink/renderer/platform/graphics/image.h"
+@@ -76,6 +77,11 @@ class PLATFORM_EXPORT StaticBitmapImage : public Image {
+     return false;
+   }
+ 
++  virtual gpu::SyncToken GenSyncToken() {
++    NOTREACHED();
++    return gpu::SyncToken();
++  }
++
+   virtual bool CopyToResourceProvider(CanvasResourceProvider*) {
+     NOTREACHED();
+     return false;

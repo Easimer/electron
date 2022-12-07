@@ -164,6 +164,16 @@ releaseMailbox(electron::api::gpu::Mailbox mailbox) {
 #endif
 }
 
+ELECTRON_EXTERN void __cdecl addOffscreenCanvasPaintObserver(
+    const char* uuid, Canvas::Observer* observer) {
+  Canvas::observers[uuid] = observer;
+}
+
+ELECTRON_EXTERN void __cdecl removeOffscreenCanvasPaintObserver(
+    const char* uuid, Canvas::Observer* observer) {
+  Canvas::observers.erase(uuid);
+}
+
 }  // namespace offscreen
 }  // namespace api
 }  // namespace electron

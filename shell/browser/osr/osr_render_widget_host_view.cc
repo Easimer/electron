@@ -1005,7 +1005,8 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
 
 void OffScreenRenderWidgetHostView::OnBackingTextureCreated(
     const gpu::Mailbox& mailbox) {
-  ForceRenderFrames(20, TimeDeltaFromHz(5));
+  // ForceRenderFrames(20, TimeDeltaFromHz(5));
+  Invalidate();
 }
 
 void DoForceRenderFrames(

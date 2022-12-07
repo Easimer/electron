@@ -2,12 +2,18 @@
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
-#ifndef NATIVE_API_WINDOW_H_
-#define NATIVE_API_WINDOW_H_
+#ifndef NATIVE_API_OFFSCREEN
+#define NATIVE_API_OFFSCREEN
 
 #include <functional>
+#include <map>
 
 #include "electron/native_api/electron.h"
+
+namespace gpu {
+  struct Mailbox;
+  struct SyncToken;
+}
 
 namespace electron {
 namespace api {
@@ -75,6 +81,40 @@ class ELECTRON_EXTERN PaintObserver {
                               void* context) = 0;
 };
 
+class ELECTRON_EXTERN Canvas {
+ public:
+  class Observer {
+   public:
+    virtual void OnCanvasTexturePaint(const electron::api::gpu::Mailbox& mailbox,
+                                      const electron::api::gpu::SyncToken& sync_token,
+                                      int x,
+                                      int y,
+                                      int width,
+                                      int height,
+                                      void (*callback)(void*, void*),
+                                      void* context) {}
+  };
+
+  class Producer {
+   protected:
+    void OnPaint(const char* uuid,
+                 const ::gpu::Mailbox& mailbox, 
+                 const ::gpu::SyncToken& sync_token,
+                 int x,
+                 int y,
+                 int width,
+                 int height,
+                 void (*callback)(void*, void*),
+                 void* context);
+  };
+
+  static std::map<std::string, Canvas::Observer*> observers;
+};
+
+ELECTRON_EXTERN void __cdecl addOffscreenCanvasPaintObserver(
+    const char* uuid, Canvas::Observer* observer);
+ELECTRON_EXTERN void __cdecl removeOffscreenCanvasPaintObserver(
+    const char* uuid, Canvas::Observer* observer);
 ELECTRON_EXTERN void __cdecl addPaintObserver(int id, PaintObserver* observer);
 ELECTRON_EXTERN void __cdecl removePaintObserver(int id,
                                                  PaintObserver* observer);
@@ -87,4 +127,4 @@ releaseMailbox(electron::api::gpu::Mailbox mailbox);
 }  // namespace api
 }  // namespace electron
 
-#endif  // NATIVE_API_WINDOW_H_
+#endif  // NATIVE_API_OFFSCREEN

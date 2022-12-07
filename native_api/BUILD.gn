@@ -27,6 +27,19 @@ source_set("offscreen") {
   ]
 }
 
+source_set("canvas") {
+  sources = [ "canvas.cc" ]
+
+  include_dirs = [
+    "//electron",
+  ]
+
+  deps = [
+    ":offscreen_headers",
+    "//base",
+  ]
+}
+
 source_set("gles2_c_lib") {
   sources = [
     "//gpu/command_buffer/client/gles2_c_lib.cc",
@@ -59,6 +72,7 @@ group("native_api") {
   public_deps = [
     ":gles2_c_lib",
     ":offscreen",
+    ":canvas",
     "//electron/native_api/GLES2",
     "//electron/native_api/egl",
   ]
