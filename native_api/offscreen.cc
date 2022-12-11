@@ -130,6 +130,7 @@ createMailboxFromD3D11SharedHandle(void* handle, int width, int height) {
     gfx::GpuMemoryBufferHandle gpu_memory_buffer_handle;
     gpu_memory_buffer_handle.dxgi_handle.Set(HANDLE(handle));
     gpu_memory_buffer_handle.type = gfx::DXGI_SHARED_HANDLE;
+    gpu_memory_buffer_handle.dxgi_token = gfx::DXGIHandleToken();
 
     std::unique_ptr<::gpu::GpuMemoryBufferImplDXGI> gpu_memory_buffer =
         ::gpu::GpuMemoryBufferImplDXGI::CreateFromHandle(
