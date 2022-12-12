@@ -121,3 +121,4 @@ add_pdfjs_options.patch
 rollback_angle.patch
 feat_hardware_accelerated_offscreen_rendering_improvements_1.patch
 feat_observable_offscreen_canvas.patch
+fix_expose_webcontents_freeze.patch

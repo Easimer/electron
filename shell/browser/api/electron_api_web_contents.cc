@@ -2116,6 +2116,7 @@ void WebContents::Unfreeze() {
   auto* web_contents = GetWebContents();
   if (web_contents) {
     web_contents->WasShown();
+    web_contents->SetPageFrozen(false);
   }
 }
 

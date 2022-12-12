@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Mon, 12 Dec 2022 13:36:29 +0100
+Subject: fix: expose webcontents.freeze
+
+This patch helps expose the webcontents.freeze API by removing the
+requirement of first hiding the webcontents.
+
+diff --git a/content/browser/web_contents/web_contents_impl.cc b/content/browser/web_contents/web_contents_impl.cc
+index 4a553eee8f5d06cb645f2b52fe3baee347b1fa94..dadbc00fc7c18afddd075b2b4bcd963853281222 100644
+--- a/content/browser/web_contents/web_contents_impl.cc
++++ b/content/browser/web_contents/web_contents_impl.cc
+@@ -2980,8 +2980,8 @@ void WebContentsImpl::Stop() {
+ void WebContentsImpl::SetPageFrozen(bool frozen) {
+   TRACE_EVENT1("content", "WebContentsImpl::SetPageFrozen", "frozen", frozen);
+
+-  // A visible page is never frozen.
+-  DCHECK_NE(Visibility::VISIBLE, GetVisibility());
++  // // A visible page is never frozen.
++  // DCHECK_NE(Visibility::VISIBLE, GetVisibility());
+
+   for (auto& entry : primary_frame_tree_.render_view_hosts()) {
+     entry.second->SetIsFrozen(frozen);
+diff --git a/third_party/blink/renderer/platform/scheduler/main_thread/page_scheduler_impl.cc b/third_party/blink/renderer/platform/scheduler/main_thread/page_scheduler_impl.cc
+index 915c826929a98833cdf8810f180ea8af2678ee58..53e20a1856a49f092c5c29e41f67a316c3cf3469 100644
+--- a/third_party/blink/renderer/platform/scheduler/main_thread/page_scheduler_impl.cc
++++ b/third_party/blink/renderer/platform/scheduler/main_thread/page_scheduler_impl.cc
+@@ -271,7 +271,7 @@ void PageSchedulerImpl::SetPageFrozen(bool frozen) {
+   // being put in a bad state. See https://crbug.com/873214 for context of how
+   // this can happen on the browser side.
+   if (frozen && IsPageVisible()) {
+-    DCHECK(false);
++    SetPageVisible(false);
+     return;
+   }
+   SetPageFrozenImpl(frozen, NotificationPolicy::kNotifyFrames);
