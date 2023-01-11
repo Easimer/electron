@@ -797,6 +797,8 @@ void OffScreenRenderWidgetHostView::SynchronizeVisualProperties(
       render_widget_host_->SynchronizeVisualProperties();
     }
   }
+
+  ForceRenderFrames(10, TimeDeltaFromHz(50));
 }
 
 void OffScreenRenderWidgetHostView::Invalidate() {
@@ -1337,7 +1339,7 @@ void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
   }
 
   if (painting_ && !IsPopupWidget()) {
-    Invalidate();
+    ForceRenderFrames(10, TimeDeltaFromHz(50));
   }
 }
 
