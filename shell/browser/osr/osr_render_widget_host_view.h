@@ -28,6 +28,7 @@
 #include "content/browser/renderer_host/render_widget_host_impl.h"  // nogncheck
 #include "content/browser/renderer_host/render_widget_host_view_base.h"  // nogncheck
 #include "content/browser/web_contents/web_contents_view.h"  // nogncheck
+#include "gpu/command_buffer/common/mailbox_holder.h"
 #include "shell/browser/osr/osr_host_display_client.h"
 #include "shell/browser/osr/osr_video_consumer.h"
 #include "shell/browser/osr/osr_view_proxy.h"
@@ -232,7 +233,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   void OnBackingTextureCreated(const gpu::Mailbox& mailbox);
   void ForceRenderFrames(int n, base::TimeDelta delay);
   void OnPopupPaint(const gfx::Rect& damage_rect);
-  void OnProxyViewPaint(const gfx::Rect& damage_rect) override;
+  void OnProxyViewPaint(const gfx::Rect& bounds) override;
   void CompositeFrame(const gfx::Rect& damage_rect);
 
   void CancelWidget();
@@ -366,9 +367,12 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   bool is_first_navigation_ = true;
   bool is_destroyed_ = false;
   bool layer_tree_frame_sink_initialized_ = false;
+  bool skip_next_frame_ = false;
 
   gfx::Size size_;
   gfx::Rect popup_position_;
+  gpu::MailboxHolder popup_;
+  gfx::Rect popup_texture_rect_;
 
   content::MouseWheelPhaseHandler mouse_wheel_phase_handler_;
 

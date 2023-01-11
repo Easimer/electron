@@ -37,6 +37,7 @@
 #include "gpu/command_buffer/client/gl_helper.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
+#include "gpu/GLES2/gl2extchromium.h"
 #include "media/base/video_frame.h"
 #include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
@@ -229,7 +230,7 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
       render_widget_host_(content::RenderWidgetHostImpl::From(host)),
       parent_host_view_(parent),
       backing_(new SkBitmap),
-      painting_(painting),
+      painting_(painting && !IsPopupWidget()),
       mouse_wheel_phase_handler_(this),
       weak_ptr_factory_(this) {
   DCHECK(render_widget_host_);
@@ -966,9 +967,76 @@ void OffScreenRenderWidgetHostView::OnPopupTexturePaint(
     const gfx::Rect& damage_rect,
     void (*callback)(void*, void*),
     void* context) {
-  texture_callback_.Run(std::move(mailbox), std::move(sync_token),
-                        std::move(content_rect), std::move(damage_rect),
-                        true, callback, context);
+  if (!painting_) {
+    callback(context, new gpu::SyncToken());
+    return;
+  }
+
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+  auto* gl = context_provider->ContextGL();
+
+  gpu::Mailbox popup_backing; 
+  gpu::SyncToken creation_token;
+  
+  if (content_rect.size() != popup_texture_rect_.size()) {
+    if (!popup_.mailbox.IsZero()) {
+      sii->DestroySharedImage(popup_.sync_token, popup_.mailbox);
+    }
+
+    popup_backing = sii->CreateSharedImage(
+      viz::ResourceFormat::RGBA_8888, 
+      content_rect.size(), 
+      gfx::ColorSpace(),
+      kBottomLeft_GrSurfaceOrigin, 
+      kPremul_SkAlphaType, 
+      gpu::SHARED_IMAGE_USAGE_GLES2,
+      gpu::kNullSurfaceHandle);
+    creation_token = sii->GenVerifiedSyncToken();
+
+    popup_texture_rect_ = content_rect;
+    popup_ = gpu::MailboxHolder(
+        std::move(popup_backing), 
+        std::move(creation_token), 
+        GL_TEXTURE_2D);
+  } else {
+    popup_backing = popup_.mailbox;
+    creation_token = popup_.sync_token;
+  }
+
+  gl->WaitSyncTokenCHROMIUM(sync_token.GetConstData());
+  gl->WaitSyncTokenCHROMIUM(creation_token.GetConstData());
+
+  if (!mailbox.IsSharedImage() || !popup_backing.IsSharedImage()) {
+    callback(context, new gpu::SyncToken());
+    return;
+  }
+
+  GLuint src_texture = gl->CreateAndTexStorage2DSharedImageCHROMIUM(mailbox.name);
+  gl->BeginSharedImageAccessDirectCHROMIUM(
+    src_texture, GL_SHARED_IMAGE_ACCESS_MODE_READ_CHROMIUM);
+
+  GLuint dst_texture = gl->CreateAndTexStorage2DSharedImageCHROMIUM(popup_backing.name);
+  gl->BeginSharedImageAccessDirectCHROMIUM(
+    dst_texture, GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM);
+
+  gl->CopySubTextureCHROMIUM(
+    src_texture, 0, GL_TEXTURE_2D, dst_texture, 0,
+    0, 0, 0, 0, content_rect.width(), content_rect.height(), 
+    false, false, false);
+
+  gl->EndSharedImageAccessDirectCHROMIUM(dst_texture);
+  gl->EndSharedImageAccessDirectCHROMIUM(src_texture);
+  const GLuint textures[2] = {src_texture, dst_texture};
+  gl->DeleteTextures(2, (const GLuint *)&textures);
+
+  gpu::SyncToken completion_token;
+  gl->GenSyncTokenCHROMIUM(completion_token.GetData());
+  callback(context, new gpu::SyncToken(completion_token));
+  popup_.sync_token = completion_token;
+
+  Invalidate();
 }
 
 void OffScreenRenderWidgetHostView::OnTexturePaint(
@@ -978,22 +1046,6 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
     const gfx::Rect& damage_rect,
     void (*callback)(void*, void*),
     void* context) {
-  if (!painting_) {
-    callback(context, new gpu::SyncToken());
-    return;
-  }
-
-  if (!IsPopupWidget()) {
-    texture_callback_.Run(std::move(mailbox), std::move(sync_token),
-                          std::move(content_rect), std::move(damage_rect),
-                          false, callback, context);
-  } else if (parent_texture_callback_) {
-    parent_texture_callback_.Run(
-        std::move(mailbox), std::move(sync_token),
-        gfx::Rect(popup_position_.origin(), content_rect.size()),
-        std::move(damage_rect), callback, context);
-  }
-
   // Release the resize hold when we reach the desired size.
   if (hold_resize_) {
     if (content_rect.size() == GetRootLayerPixelSize()) {
@@ -1001,11 +1053,85 @@ void OffScreenRenderWidgetHostView::OnTexturePaint(
       ReleaseResizeHold();
     }
   }
+
+  if (skip_next_frame_) {
+    skip_next_frame_ = false;
+    callback(context, new gpu::SyncToken());
+    return;
+  }
+  
+  if (!painting_) {
+    callback(context, new gpu::SyncToken());
+    return;
+  }
+
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* gl = context_provider->ContextGL();
+
+  if (!IsPopupWidget()) {
+    if (!popup_.mailbox.IsZero()) {
+      gl->WaitSyncTokenCHROMIUM(popup_.sync_token.GetConstData());
+      gl->WaitSyncTokenCHROMIUM(sync_token.GetConstData());
+
+      if (!popup_.mailbox.IsSharedImage() || !mailbox.IsSharedImage()) {
+        callback(context, new gpu::SyncToken());
+        return;
+      }
+
+      GLuint src_texture = gl->CreateAndTexStorage2DSharedImageCHROMIUM(popup_.mailbox.name);
+      gl->BeginSharedImageAccessDirectCHROMIUM(
+        src_texture, GL_SHARED_IMAGE_ACCESS_MODE_READ_CHROMIUM);
+
+      GLuint dst_texture = gl->CreateAndTexStorage2DSharedImageCHROMIUM(mailbox.name);
+      gl->BeginSharedImageAccessDirectCHROMIUM(
+        dst_texture, GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM);
+
+      gl->CopySubTextureCHROMIUM(
+        src_texture, 0, GL_TEXTURE_2D, dst_texture, 0,
+        popup_texture_rect_.x(), 
+        content_rect.height() - popup_texture_rect_.y() - popup_texture_rect_.height(),
+        0, 0, 
+        popup_texture_rect_.width(), popup_texture_rect_.height(), 
+        false, false, false);
+
+      gl->EndSharedImageAccessDirectCHROMIUM(dst_texture);
+      gl->EndSharedImageAccessDirectCHROMIUM(src_texture);
+      const GLuint textures[2] = {src_texture, dst_texture};
+      gl->DeleteTextures(2, (const GLuint *)&textures);
+
+      gpu::SyncToken completion_token;
+      gl->GenSyncTokenCHROMIUM(completion_token.GetData());
+
+      texture_callback_.Run(std::move(mailbox), std::move(completion_token),
+                            std::move(content_rect), std::move(damage_rect),
+                            false, callback, context);
+    } else {
+      texture_callback_.Run(std::move(mailbox), std::move(sync_token),
+                            std::move(content_rect), std::move(damage_rect),
+                            false, callback, context);
+    }
+  } else if (parent_texture_callback_) {
+    if (!mailbox.IsZero()) {
+      popup_texture_rect_ = gfx::Rect(popup_position_.origin(), content_rect.size());
+      parent_texture_callback_.Run(
+        std::move(mailbox), std::move(sync_token),
+        popup_texture_rect_,
+        std::move(damage_rect), callback, context);
+    } else {
+      callback(context, new gpu::SyncToken());
+    }
+  }
 }
 
 void OffScreenRenderWidgetHostView::OnBackingTextureCreated(
     const gpu::Mailbox& mailbox) {
-  // ForceRenderFrames(20, TimeDeltaFromHz(5));
+  skip_next_frame_ = !IsPopupWidget();
+  if (parent_host_view_) {
+    if (parent_host_view_->popup_host_view_ == this) {
+      parent_host_view_->skip_next_frame_ = true;
+    }
+  }
   Invalidate();
 }
 
@@ -1031,20 +1157,19 @@ void OffScreenRenderWidgetHostView::OnPopupPaint(const gfx::Rect& damage_rect) {
       ConvertRectToPixels(damage_rect, GetScaleFactor())));
 }
 
-void OffScreenRenderWidgetHostView::OnProxyViewPaint(
-    const gfx::Rect& damage_rect) {
+void OffScreenRenderWidgetHostView::OnProxyViewPaint(const gfx::Rect& bounds) {
   auto* context_factory = content::GetContextFactory();
   auto context_provider = context_factory->SharedMainThreadContextProvider();
   auto* sii = context_provider->SharedImageInterface();
 
   SkBitmap frame;
-  frame.allocN32Pixels(SizeInPixels().width(), SizeInPixels().height(), false);
+  frame.allocN32Pixels(bounds.width(), bounds.height(), false);
   cc::SkiaPaintCanvas paint_canvas(frame);
   gfx::Canvas canvas(&paint_canvas, 1.0f);
 
   auto transform = gfx::Transform(
     1, 0, 0, 0,
-    0, -1, 0, SizeInPixels().height(),
+    0, -1, 0, bounds.height(),
     0, 0, 1, 0,
     0, 0, 0, 1
   );
@@ -1052,13 +1177,9 @@ void OffScreenRenderWidgetHostView::OnProxyViewPaint(
   canvas.Transform(transform);
 
   for (auto* proxy_view : proxy_views_) {
-    gfx::Rect rect_in_pixels = proxy_view->GetBounds();
-
     if (!proxy_view->GetBitmap()->drawsNothing()) {
       gfx::ImageSkia image(gfx::ImageSkiaRep(*proxy_view->GetBitmap(), 1.0f));
-      canvas.DrawImageInt(image,
-                          rect_in_pixels.origin().x(),
-                          rect_in_pixels.origin().y());
+      canvas.DrawImageInt(image, 0, 0);
     }
   }
 
@@ -1078,27 +1199,13 @@ void OffScreenRenderWidgetHostView::OnProxyViewPaint(
       kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType, kUsage, pixels);
   auto sync_token = sii->GenVerifiedSyncToken();
 
-  struct MailboxHolder {
-    gpu::Mailbox mailbox;
-  };
+  popup_texture_rect_ = bounds;
+  popup_ = gpu::MailboxHolder(
+      std::move(mailbox), 
+      std::move(sync_token), 
+      GL_TEXTURE_2D);
 
-  OnPopupTexturePaint(
-      mailbox,
-      sync_token,
-      gfx::Rect(SizeInPixels()),
-      gfx::Rect(SizeInPixels()),
-      [] (void* context, void* token) {
-        auto* context_factory = content::GetContextFactory();
-        auto context_provider = context_factory->SharedMainThreadContextProvider();
-        auto* sii = context_provider->SharedImageInterface();
-
-        if (context) {
-          sii->DestroySharedImage(
-              *reinterpret_cast<gpu::SyncToken*>(token),
-              reinterpret_cast<MailboxHolder*>(context)->mailbox);
-        }
-      },
-      new MailboxHolder{std::move(mailbox)});
+  Invalidate();
 }
 
 void OffScreenRenderWidgetHostView::CompositeFrame(
@@ -1152,15 +1259,26 @@ void OffScreenRenderWidgetHostView::CancelWidget() {
 
   if (parent_host_view_) {
     if (parent_host_view_->popup_host_view_ == this) {
-      parent_texture_callback_.Run(gpu::Mailbox(), gpu::SyncToken(),
-                                   gfx::Rect(), gfx::Rect(),
-                                   nullptr, nullptr);
-
       parent_host_view_->set_popup_host_view(nullptr);
+
+      auto* context_factory = content::GetContextFactory();
+      auto context_provider = context_factory->SharedMainThreadContextProvider();
+      auto* sii = context_provider->SharedImageInterface();
+
+      if (!parent_host_view_->popup_.mailbox.IsZero()) {
+        sii->DestroySharedImage(
+            parent_host_view_->popup_.sync_token,
+            parent_host_view_->popup_.mailbox);
+      }
+
+      parent_host_view_->popup_ = gpu::MailboxHolder();
+      parent_host_view_->popup_texture_rect_ = gfx::Rect();
     } else if (parent_host_view_->child_host_view_ == this) {
       parent_host_view_->set_child_host_view(nullptr);
       parent_host_view_->Show();
     }
+
+    parent_host_view_->Invalidate();
     parent_host_view_ = nullptr;
   }
 
@@ -1186,7 +1304,19 @@ void OffScreenRenderWidgetHostView::RemoveViewProxy(OffscreenViewProxy* proxy) {
 void OffScreenRenderWidgetHostView::ProxyViewDestroyed(
     OffscreenViewProxy* proxy) {
   proxy_views_.erase(proxy);
-  OnProxyViewPaint(gfx::Rect(size_));
+
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+
+  if (!popup_.mailbox.IsZero()) {
+    sii->DestroySharedImage(popup_.sync_token, popup_.mailbox);
+  }
+
+  popup_ = gpu::MailboxHolder();
+  popup_texture_rect_ = gfx::Rect();
+
+  Invalidate();
 }
 
 void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
@@ -1206,7 +1336,7 @@ void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
     host_display_client_->SetActive(IsPainting());
   }
 
-  if (painting_) {
+  if (painting_ && !IsPopupWidget()) {
     Invalidate();
   }
 }
@@ -1319,6 +1449,17 @@ bool OffScreenRenderWidgetHostView::SetRootLayerSize(bool force) {
     return false;
   }
 
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+
+  if (!popup_.mailbox.IsZero()) {
+    sii->DestroySharedImage(popup_.sync_token, popup_.mailbox);
+  }
+
+  popup_ = gpu::MailboxHolder();
+  popup_texture_rect_ = gfx::Rect();
+
   GetRootLayer()->SetBounds(gfx::Rect(size));
 
   if (compositor_) {
@@ -1341,7 +1482,7 @@ bool OffScreenRenderWidgetHostView::ResizeRootLayer() {
         compositor_->DisableSwapUntilResize();
       #endif
 
-      hold_resize_ = true;
+      hold_resize_ = !IsPopupWidget();
       return true;
     }
   } else if (!pending_resize_) {
