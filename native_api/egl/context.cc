@@ -6,6 +6,7 @@
 
 #include <GLES2/gl2extchromium.h>
 
+#include "base/run_loop.h"
 #include "base/trace_event/trace_log.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/gpu_utils.h"
@@ -115,6 +116,91 @@ void Context::SwapBuffersComplete(
       ca_layer_frame_sink->UpdateCALayerTree(params.ca_layer_params);
   }
 #endif
+}
+
+static void GpuFenceArrived(std::unique_ptr<gfx::GpuFence>* target,
+                            base::OnceClosure cb,
+                            std::unique_ptr<gfx::GpuFence> fence) {
+  *target = std::move(fence);
+
+  if (cb) {
+    std::move(cb).Run();
+  }
+}
+
+bool Context::CreateGpuFences(uint32_t num_fences,
+                              uint32_t* buf_ids,
+                              std::unique_ptr<gfx::GpuFence>* buf_fences) {
+  auto* gl = context_provider_->ContextGL();
+  auto* support = context_provider_->ContextSupport();
+
+  if (!gl || !support) {
+    return false;
+  }
+
+  base::RunLoop runLoop;
+  for (uint32_t idx_fence = 0; idx_fence < num_fences; idx_fence++) {
+    GLuint id = gl->CreateGpuFenceCHROMIUM();
+
+    base::OnceClosure cb;
+    if (idx_fence == num_fences - 1) {
+      cb = runLoop.QuitClosure();
+    }
+
+    support->GetGpuFence(
+        id, base::BindOnce(&GpuFenceArrived, &buf_fences[idx_fence],
+                           std::move(cb)));
+    buf_ids[idx_fence] = id;
+  }
+
+  runLoop.Run();
+
+  bool free_fences = false;
+
+  for (uint32_t idx_fence = 0; idx_fence < num_fences; idx_fence++) {
+    if (buf_fences[idx_fence] == nullptr) {
+      free_fences |= true;
+      break;
+    }
+  }
+
+  if (free_fences) {
+    for (uint32_t idx_fence = 0; idx_fence < num_fences; idx_fence++) {
+      buf_fences[idx_fence].reset();
+      gl->DestroyGpuFenceCHROMIUM(buf_ids[idx_fence]);
+    }
+
+    return false;
+  }
+
+  return true;
+}
+
+bool Context::DestroyGpuFences(uint32_t num_fences,
+                               uint32_t* buf_ids,
+                               std::unique_ptr<gfx::GpuFence>* buf_fences) {
+  if (num_fences == 0) {
+    return true;
+  }
+
+  if (buf_ids == nullptr) {
+    return false;
+  }
+
+  auto* gl = context_provider_->ContextGL();
+  if (gl == nullptr) {
+    return false;
+  }
+
+  for (uint32_t idx_fence = 0; idx_fence < num_fences; idx_fence++) {
+    if (buf_fences[idx_fence] != nullptr) {
+      buf_fences[idx_fence].reset();
+      gl->DestroyGpuFenceCHROMIUM(buf_ids[idx_fence]);
+    }
+    buf_ids[idx_fence] = 0;
+  }
+
+  return true;
 }
 
 void Context::PresentationComplete(const gfx::PresentationFeedback& feedback) {

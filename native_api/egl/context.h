@@ -14,6 +14,7 @@
 #include "gpu/command_buffer/common/swap_buffers_complete_params.h"
 #include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
 #include "ui/gfx/color_space.h"
+#include "ui/gfx/gpu_fence.h"
 #include "ui/gfx/gpu_memory_buffer.h"
 #include "ui/gfx/presentation_feedback.h"
 
@@ -68,6 +69,13 @@ class Context : public base::RefCountedThreadSafe<Context> {
       uint32_t usage);
 
   void DeleteSharedImage(gpu::Mailbox mailbox);
+
+  bool CreateGpuFences(uint32_t num_fences,
+                       uint32_t* buf_ids,
+                       std::unique_ptr<gfx::GpuFence>* buf_fences);
+  bool DestroyGpuFences(uint32_t num_fences,
+                        uint32_t* buf_ids,
+                        std::unique_ptr<gfx::GpuFence>* buf_fences);
 
  private:
   friend class base::RefCountedThreadSafe<Context>;
